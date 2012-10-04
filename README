@@ -1,2 +1,37 @@
 The first Open Source document analysis platform 
 https://ikanow.jira.com/wiki/display/INFOSS/Infinit.e+Overview
+
+
+Here are the imports used : 
+     import com.google.gson.GsonBuilder;
+     import com.google.gson.JsonDeserializationContext;
+     import com.google.gson.JsonDeserializer;
+     import com.google.gson.JsonElement;
+     import com.google.gson.JsonObject;
+     import com.google.gson.JsonParseException;
+     import com.google.gson.JsonPrimitive;
+     import com.google.gson.JsonSerializationContext;
+     import com.google.gson.JsonSerializer;
+     import com.google.gson.reflect.TypeToken;
+     import com.mongodb.BasicDBObject;
+     import com.mongodb.DBObject;
+     import com.mongodb.WriteResult;
+     import org.apache.log4j.Logger;
+     import org.bson.types.ObjectId;
+     import org.elasticsearch.common.Hex;
+     import org.elasticsearch.search.SearchHit;
+     import org.elasticsearch.search.SearchHitField;
+     import org.elasticsearch.search.SearchHits;
+     import org.restlet.Request;
+     import org.restlet.Response;
+     import org.restlet.data.CookieSetting;
+     import org.restlet.data.Form;
+     import org.restlet.data.MediaType;
+     import org.restlet.data.Parameter;
+     import org.restlet.representation.Representation;
+     import org.restlet.representation.StringRepresentation;
+     import org.restlet.resource.Get;
+     import org.restlet.resource.ResourceException;
+     import org.restlet.resource.ServerResource;
+     import org.restlet.util.Series;
+     import sun.misc.BASE64Encoder;
