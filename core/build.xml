@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:ivy="antlib:org.apache.ivy.ant" name="infinit.e.data_model" default="dist" basedir=".">
+
+    <target name="dist">
+      <ant dir="infinit.e.data_model" target="dist"/>
+      <ant dir="infinit.e.processing.custom.library" target="dist"/>
+      <ant dir="infinit.e.processing.generic.library" target="dist"/>
+      <ant dir="infinit.e.harvest.library" target="dist"/>
+      <ant dir="infinit.e.api.server" target="dist"/>
+      <ant dir="infinit.e.core.server" target="dist"/>
+    </target>
+
+    
+</project>
