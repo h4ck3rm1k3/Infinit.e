@@ -181,6 +181,18 @@
 		</war>
 	</target>
 	
+	<target name="dist"
+		depends="jar"
+		description="Create binary distribution">
+		<!-- contains the jars -->
+		<mkdir dir="${dir.dist}" />
+
+		<!-- copy the bundled jars into the bundled directory -->
+<!--		<copy 
+			file="${dir.build.jar}/${ant.project.name}.jar"
+			tofile="${dir.dist}/${ant.project.name}.jar" />
+-->
+	</target>
 	
 	
 </project>
