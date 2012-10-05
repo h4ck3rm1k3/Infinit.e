@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:ivy="antlib:org.apache.ivy.ant" name="infinit.e.data_model" default="dist" basedir=".">
+
+    <target name="dist">
+      <ant dir="infinit.e.widget.library/build" target="dist"/>
+      <ant dir="infinit.e.flex.client/build" target="dist"/>
+      <ant dir="infinit.e.flex.client.library/build" target="dist"/>
+      <ant dir="InfiniteEntityProfiler/build" target="dist"/>
+
+    </target>
+
+</project>

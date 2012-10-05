@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:ivy="antlib:org.apache.ivy.ant" name="infinit.e.data_model" default="dist" basedir=".">
+
+    <target name="dist">
+      <ant dir="infinit.e.mongo-indexer" target="dist"/>
+      <ant dir="InfiniteSourceMonitor" target="dist"/>
+      <ant dir="infinit.e.hadoop.prototyping_engine" target="dist"/>
+      <ant dir="Infinit.e.Manager" target="dist"/>
+
+    </target>
+    
+</project>

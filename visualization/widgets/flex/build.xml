@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:ivy="antlib:org.apache.ivy.ant" name="infinit.e.data_model" default="dist" basedir=".">
+    <target name="dist">
+      <ant dir="InfiniteTimelineWidget/build" target="dist"/>
+      <ant dir="InfiniteEventGraphWidget/build" target="dist"/>
+      <ant dir="InfiniteMapQuestWidget/build" target="dist"/>
+      <ant dir="InfiniteTimelineEventWidget/build" target="dist"/>
+      <ant dir="InfiniteDocBrowserWidget/build" target="dist"/>
+      <ant dir="InfiniteSignificanceWidget/build" target="dist"/>
+      <ant dir="InfiniteSentimentWidget/build" target="dist"/>
+    </target>
+
+</project>
