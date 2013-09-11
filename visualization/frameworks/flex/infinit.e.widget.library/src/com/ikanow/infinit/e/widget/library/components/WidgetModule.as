@@ -1,26 +1,58 @@
 /*******************************************************************************
  * Copyright 2012, The Infinit.e Open Source Project.
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License, version 3,
  * as published by the Free Software Foundation.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
 package com.ikanow.infinit.e.widget.library.components
 {
+	import com.ikanow.infinit.e.widget.library.assets.skins.WidgetMaximizeButtonSkin;
 	import com.ikanow.infinit.e.widget.library.assets.skins.WidgetModuleSkin;
+	import com.ikanow.infinit.e.widget.library.data.WidgetDragObject;
+	import com.ikanow.infinit.e.widget.library.events.WidgetDropEvent;
+	import com.ikanow.infinit.e.widget.library.utility.WidgetDragUtil;
 	import com.ikanow.infinit.e.widget.library.widget.IWidgetModule;
+	
+	import flash.desktop.Clipboard;
+	import flash.desktop.ClipboardFormats;
+	import flash.display.BitmapData;
+	import flash.display.DisplayObject;
+	import flash.display.DisplayObjectContainer;
 	import flash.events.DataEvent;
 	import flash.events.Event;
+	import flash.events.KeyboardEvent;
 	import flash.events.MouseEvent;
+	import flash.external.ExternalInterface;
+	import flash.geom.Matrix;
+	import flash.geom.Rectangle;
+	import flash.geom.Point;
+	import flash.ui.Keyboard;
+	import flash.utils.getQualifiedClassName;
+	
+	import mx.charts.chartClasses.ChartBase;
+	import mx.charts.chartClasses.DataTip;
+	import mx.collections.ArrayCollection;
+	import mx.controls.Alert;
+	import mx.core.IUIComponent;
+	import mx.core.UIComponent;
 	import mx.events.CloseEvent;
+	import mx.events.DragEvent;
+	import mx.graphics.codec.JPEGEncoder;
+	import mx.managers.DragManager;
+	import mx.managers.ISystemManager;
+	import mx.managers.SystemManager;
+	import mx.managers.ToolTipManager;
+	import mx.utils.Base64Encoder;
+	
 	import spark.components.Group;
 	import spark.components.HGroup;
 	import spark.events.IndexChangeEvent;
@@ -41,45 +73,57 @@ package com.ikanow.infinit.e.widget.library.components
 	/**
 	 *  Dispatched when the user selects the maximise button.
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "maximize", type = "flash.events.Event" )]
 	/**
 	 *  Dispatched when the user selects the minimize button.
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "minimize", type = "flash.events.Event" )]
 	/**
 	 *  Dispatched when the user selects the next button.
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "next", type = "flash.events.Event" )]
 	/**
 	 *  Dispatched when the user selects the previous button.
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "previous", type = "flash.events.Event" )]
 	/**
 	 *  Dispatched when the mouse is over the header
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "headerMouseOver", type = "flash.events.Event" )]
 	/**
 	 *  Dispatched when the mouse leaves the header
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "headerMouseOut", type = "flash.events.Event" )]
 	/**
 	 *  Dispatched when the mouse is released when over the header
 	 *
-	 *  @eventType flase.events.Event
+	 *  @eventType flash.events.Event
 	 */
 	[Event( name = "headerMouseUp", type = "flash.events.Event" )]
+	/**
+	 * Dispatched when an appropriate item is dropped on widget
+	 *
+	 * @eventType com.ikanow.infinit.e.widget.library.events.WidgetDropEvent
+	 */
+	[Event( name = "widgetDrop", type = "com.ikanow.infinit.e.widget.library.events.WidgetDropEvent" )]
+	/**
+	 * Dispatched when a widget is being closed
+	 *
+	 * @eventType flash.events.Event
+	 */
+	[Event( name = "widgetClose", type = "flash.events.Event" )]
 	public class WidgetModule extends Module implements IWidgetModule
 	{
 		
@@ -352,6 +396,12 @@ package com.ikanow.infinit.e.widget.library.components
 		
 		[SkinPart( required = "false" )]
 		/**
+		 *  The snapshot button
+		 */
+		public var snapshotButton:WidgetHeaderIconButton;
+		
+		[SkinPart( required = "false" )]
+		/**
 		 *  The move button
 		 */
 		public var moveButton:WidgetHeaderIconButton;
@@ -420,6 +470,22 @@ package com.ikanow.infinit.e.widget.library.components
 		public function WidgetModule()
 		{
 			super();
+			this.addEventListener( DragEvent.DRAG_ENTER, widgetDragEnterHandler );
+			this.addEventListener( DragEvent.DRAG_DROP, widgetDragDropHandler );
+			this.addEventListener( DragEvent.DRAG_OVER, widgetDragOverHandler );
+			this.addEventListener ( KeyboardEvent.KEY_DOWN, widget_keyDownHandler );
+		}
+		
+		
+		protected function widget_keyDownHandler(event:KeyboardEvent):void
+		{
+			if (event.ctrlKey && event.shiftKey) 
+			{
+				if (event.keyCode == Keyboard.C)
+				{
+					snapshotButton_clickHandler(null);
+				}				
+			}			
 		}
 		
 		
@@ -447,6 +513,8 @@ package com.ikanow.infinit.e.widget.library.components
 		 */
 		protected function closeButton_clickHandler( event:MouseEvent ):void
 		{
+			//try to dispatch our close widget event first
+			dispatchEvent( new Event( "widgetClose" ) );
 			dispatchEvent( new CloseEvent( CloseEvent.CLOSE ) );
 		}
 		
@@ -657,6 +725,11 @@ package com.ikanow.infinit.e.widget.library.components
 					moveButton.enabled = false;
 				}
 			}
+			if ( snapshotButton )
+			{
+				snapshotButton.visible = false;
+				snapshotButton.enabled = false;
+			}
 		}
 		
 		/**
@@ -675,6 +748,12 @@ package com.ikanow.infinit.e.widget.library.components
 					moveButton.enabled = true;
 				}
 			}
+			if ( snapshotButton )
+			{
+				snapshotButton.visible = true;
+				snapshotButton.enabled = true;
+			}
+			
 		}
 		
 		/**
@@ -692,6 +771,11 @@ package com.ikanow.infinit.e.widget.library.components
 					moveButton.visible = true;
 					moveButton.enabled = true;
 				}
+			}
+			if ( snapshotButton )
+			{
+				snapshotButton.visible = true;
+				snapshotButton.enabled = true;
 			}
 		}
 		
@@ -757,6 +841,9 @@ package com.ikanow.infinit.e.widget.library.components
 				case nextButton:
 					nextButton.addEventListener( MouseEvent.CLICK, nextButton_clickHandler );
 					break;
+				case snapshotButton:
+					snapshotButton.addEventListener( MouseEvent.CLICK, snapshotButton_clickHandler );
+					break;
 				case moveButton:
 					moveButton.addEventListener( MouseEvent.MOUSE_OVER, header_mouseOverHandler );
 					moveButton.addEventListener( MouseEvent.MOUSE_OUT, header_mouseOutHandler );
@@ -806,6 +893,9 @@ package com.ikanow.infinit.e.widget.library.components
 				case nextButton:
 					nextButton.removeEventListener( MouseEvent.CLICK, nextButton_clickHandler );
 					break;
+				case snapshotButton:
+					snapshotButton.removeEventListener( MouseEvent.CLICK, snapshotButton_clickHandler );
+					break;
 				case moveButton:
 					moveButton.removeEventListener( MouseEvent.MOUSE_OVER, header_mouseOverHandler );
 					moveButton.removeEventListener( MouseEvent.MOUSE_OUT, header_mouseOutHandler );
@@ -839,6 +929,153 @@ package com.ikanow.infinit.e.widget.library.components
 		protected function previousButton_clickHandler( event:MouseEvent ):void
 		{
 			dispatchEvent( new Event( "previous" ) );
+		}
+		
+		//======================================
+		// private methods 
+		//======================================
+		
+		private function findDatatips(container:ISystemManager):DisplayObject
+		{
+			for (var i:int = 0; i < container.rawChildren.numChildren; i++) {
+				var thisChild:DisplayObject = container.rawChildren.getChildAt(i);
+				
+				if (thisChild is DataTip) {
+					return thisChild;
+				}
+			}			
+			return null;
+		}
+		
+		protected function snapshotButton_clickHandler( event:MouseEvent ):void
+		{
+			try {
+				var bmpData:BitmapData = new BitmapData(this.width, this.height);
+				bmpData.draw(this);
+				
+				// If a tooltip is enabled, then draw it:
+				if ((null == event) && (null != ToolTipManager.currentToolTip))
+				{
+					// Translate tooltip, adjust for screen clip and render: 
+					var point:Point = new Point();
+					point.x = ToolTipManager.currentToolTip.x;
+					point.y = ToolTipManager.currentToolTip.y;
+					point = this.globalToLocal(point);					
+					if (point.x + ToolTipManager.currentToolTip.width > this.width)
+					{
+						point.x = this.width - ToolTipManager.currentToolTip.width;
+					}					
+					if (point.x < 0) 
+						point.x = 0;
+					if (point.y + ToolTipManager.currentToolTip.height > this.height)
+					{
+						point.y = this.height - ToolTipManager.currentToolTip.height;
+					}
+					if (point.y < 0) 
+						point.y = 0;
+					var translateMatrix:Matrix = new Matrix();
+					translateMatrix.tx = point.x;
+					translateMatrix.ty = point.y;
+					bmpData.draw(ToolTipManager.currentToolTip, translateMatrix);					
+				}
+				if (null == event) {
+					var datatip:DisplayObject = findDatatips(this.systemManager.getTopLevelRoot() as ISystemManager);
+					if (null != datatip) {
+						// Translate datatip, adjust for screen clip and render: 
+						point = new Point();
+						point.x = datatip.x;
+						point.y = datatip.y;
+						point = this.globalToLocal(point);					
+						if (point.x + datatip.width > this.width)
+						{
+							point.x = this.width - datatip.width;
+						}					
+						if (point.x < 0) 
+							point.x = 0;
+						if (point.y + datatip.height > this.height)
+						{
+							point.y = this.height - datatip.height;
+						}
+						if (point.y < 0) 
+							point.y = 0;
+						translateMatrix = new Matrix();
+						translateMatrix.tx = point.x;
+						translateMatrix.ty = point.y;
+						bmpData.draw(datatip, translateMatrix);											
+					}
+				}				
+				var jencoder:JPEGEncoder = new JPEGEncoder(100);				
+				var encoder:Base64Encoder = new Base64Encoder();
+				encoder.encodeBytes(jencoder.encode(bmpData));
+				var widgetoffset:int = this.width/2;
+				ExternalInterface.call("expandPhoto",encoder.flush(), widgetoffset.toString());
+			}
+			catch (e:Error) {
+				mx.controls.Alert.show(e.message);				
+			}
+		}
+		
+		/**
+		 * Recursively climbs up the ui tree until it finds a widgetmodule, no parent, or hits max_level
+		 **/
+		private function getWidgetModule( root:Object, curr_level:int, max_level:int ):WidgetModule
+		{			
+			if ( curr_level < max_level )
+			{
+				if ( root != null )
+				{
+					var module:WidgetModule = root as WidgetModule;
+					if ( module != null )
+					{
+						return module;
+					}
+					else
+					{
+						return getWidgetModule(root.parent as UIComponent, curr_level++, max_level);
+					}
+				}
+			}
+			return null;
+		}
+		
+		private function widgetDragDropHandler( event:DragEvent ):void
+		{
+			var dragObject:WidgetDragObject = event.dragSource.dataForFormat( WidgetDragUtil.WIDGET_DRAG_FORMAT ) as WidgetDragObject;
+			var widgetName:String = "unknown";
+			var widgetClass:String = "unknown";
+			var module:WidgetModule = getWidgetModule( event.dragInitiator, 0, 30 );
+			
+			if ( module != null )
+			{
+				widgetName = module.title;
+				widgetClass = flash.utils.getQualifiedClassName( module );
+			}
+			var widgetDropEvent:WidgetDropEvent = new WidgetDropEvent( "widgetDrop", dragObject.entities, dragObject.associations, dragObject.documents, dragObject.dragSource, widgetName, widgetClass );
+			this.dispatchEvent( widgetDropEvent );
+		}
+		
+		private function widgetDragEnterHandler( event:DragEvent ):void
+		{
+			if ( this.hasEventListener( "widgetDrop" ) )
+			{
+				if ( event.dragSource.hasFormat( WidgetDragUtil.WIDGET_DRAG_FORMAT ) )
+				{
+					DragManager.acceptDragDrop( this );
+					return;
+				}
+			}
+		}
+		
+		private function widgetDragOverHandler( event:DragEvent ):void
+		{
+			if ( this.hasEventListener( "widgetDrop" ) )
+			{
+				if ( event.dragSource.hasFormat( WidgetDragUtil.WIDGET_DRAG_FORMAT ) )
+				{
+					DragManager.acceptDragDrop( this );
+					return;
+				}
+			}
 		}
 	}
 }

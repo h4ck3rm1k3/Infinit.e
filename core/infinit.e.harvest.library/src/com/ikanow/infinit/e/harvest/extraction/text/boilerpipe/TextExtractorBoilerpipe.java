@@ -18,6 +18,7 @@ package com.ikanow.infinit.e.harvest.extraction.text.boilerpipe;
 import java.io.InputStream;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.Map;
 import java.util.Scanner;
 
 import org.apache.log4j.Logger;
@@ -26,6 +27,7 @@ import com.ikanow.infinit.e.data_model.InfiniteEnums;
 import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorDocumentLevelException;
 import com.ikanow.infinit.e.data_model.interfaces.harvest.ITextExtractor;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
+import com.ikanow.infinit.e.harvest.utils.ProxyManager;
 
 import de.l3s.boilerpipe.extractors.ArticleExtractor;
 
@@ -48,12 +50,25 @@ public class TextExtractorBoilerpipe implements ITextExtractor
 					if ((null == partialDoc.getFullText()) || (0 == partialDoc.getFullText().length()))
 					{
 						URL url = new URL(partialDoc.getUrl());
-						URLConnection urlConnect = url.openConnection();
+						String proxyOverride = null;
 						if ((null != partialDoc.getTempSource()) && 
-								(null != partialDoc.getTempSource().getRssConfig()) && 
-									(null != partialDoc.getTempSource().getRssConfig().getUserAgent()))
+								(null != partialDoc.getTempSource().getRssConfig())) 
 						{
-							urlConnect.setRequestProperty("User-Agent", partialDoc.getTempSource().getRssConfig().getUserAgent());
+							proxyOverride = partialDoc.getTempSource().getRssConfig().getProxyOverride();
+						}						
+						URLConnection urlConnect = url.openConnection(ProxyManager.getProxy(url, proxyOverride));
+						if ((null != partialDoc.getTempSource()) && 
+								(null != partialDoc.getTempSource().getRssConfig()))
+									
+						{
+							if (null != partialDoc.getTempSource().getRssConfig().getUserAgent()) {
+								urlConnect.setRequestProperty("User-Agent", partialDoc.getTempSource().getRssConfig().getUserAgent());
+							}
+							if (null != partialDoc.getTempSource().getRssConfig().getHttpFields()) {
+								for (Map.Entry<String, String> httpFieldPair: partialDoc.getTempSource().getRssConfig().getHttpFields().entrySet()) {
+									urlConnect.setRequestProperty(httpFieldPair.getKey(), httpFieldPair.getValue());														
+								}
+							}//TESTED
 						}// TESTED
 						
 						InputStream urlStream = null;
@@ -63,7 +78,7 @@ public class TextExtractorBoilerpipe implements ITextExtractor
 						catch (Exception e) { // Try one more time, this time exception out all the way
 							urlStream = urlConnect.getInputStream();					 
 						}
-						text = new Scanner(urlStream).useDelimiter("\\A").next();
+						text = new Scanner(urlStream, "UTF-8").useDelimiter("\\A").next();
 						partialDoc.setFullText(text);
 					}
 					if (partialDoc.getFullText().length() < 2097152) { //2MB max
@@ -89,11 +104,8 @@ public class TextExtractorBoilerpipe implements ITextExtractor
 			}
 			catch (Exception ex)
 			{
-				/**/
-				ex.printStackTrace();
-				
-				logger.error("Boilerpipe extract error=" + ex.getMessage());
-				throw new InfiniteEnums.ExtractorDocumentLevelException();
+				logger.error("Boilerpipe extract error=" + ex.getMessage() );
+				throw new InfiniteEnums.ExtractorDocumentLevelException(ex.getMessage());
 			}			
 		}
 	}

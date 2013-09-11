@@ -1,15 +1,15 @@
 /*******************************************************************************
  * Copyright 2012, The Infinit.e Open Source Project.
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License, version 3,
  * as published by the Free Software Foundation.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
@@ -46,6 +46,26 @@ package com.ikanow.infinit.e.community.control
 		// public methods 
 		//======================================
 		
+		[EventHandler( event = "CommunityEvent.GET_COMMUNITIES_ALL" )]
+		/**
+		 * Get Communities Public
+		 * @param event
+		 */
+		public function getCommunitiesAll( event:CommunityEvent ):void
+		{
+			executeServiceCall( "CommunityController.getCommunitiesAll()", event, communityServiceDelegate.getCommunitiesAll( event ), getCommunitiesAll_resultHandler, defaultFaultHandler );
+		}
+		
+		/**
+		 * Get Communities Public Result Handler
+		 * @param event
+		 */
+		public function getCommunitiesAll_resultHandler( event:ResultEvent ):void
+		{
+			if ( verifyServiceResponseSuccess( "getCommunitiesAll()", event.result as ServiceResult ) )
+				communityManager.setCommunities( ServiceResult( event.result ).data as ArrayCollection );
+		}
+		
 		[EventHandler( event = "CommunityEvent.GET_COMMUNITIES_PUBLIC" )]
 		/**
 		 * Get Communities Public
@@ -64,6 +84,18 @@ package com.ikanow.infinit.e.community.control
 		{
 			if ( verifyServiceResponseSuccess( "getCommunitiesPublic()", event.result as ServiceResult ) )
 				communityManager.setCommunities( ServiceResult( event.result ).data as ArrayCollection );
+		}
+		
+		[EventHandler( event = "CommunityEvent.REFRESH" )]
+		/**
+		 * Get Communities Public
+		 * @param event
+		 */
+		public function getCommunitiesRefresh( event:CommunityEvent ):void
+		{
+			communityManager.refreshing = true;
+			//getCommunitiesPublic( event );
+			getCommunitiesAll(event);
 		}
 		
 		[EventHandler( event = "CommunityEvent.JOIN_COMMUNITY" )]

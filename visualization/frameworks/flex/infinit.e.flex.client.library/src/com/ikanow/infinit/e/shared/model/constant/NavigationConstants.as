@@ -67,6 +67,8 @@ package com.ikanow.infinit.e.shared.model.constant
 		
 		public static const DASHBOARD_HEADER_MANAGER_ID:String = DASHBOARD_HEADER_ID + "Manager";
 		
+		public static const DASHBOARD_HEADER_SOURCE_MONITOR_ID:String = DASHBOARD_HEADER_ID + "SourceMonitor";
+		
 		public static const DASHBOARD_HEADER_LOGOUT_ID:String = DASHBOARD_HEADER_ID + "Logout";
 		
 		// workspaces
@@ -92,6 +94,8 @@ package com.ikanow.infinit.e.shared.model.constant
 		public static const WORKSPACES_HEADER_EXPORT_JSON_ID:String = WORKSPACES_HEADER_ID + "ExportJSON";
 		
 		public static const WORKSPACES_HEADER_EXPORT_RSS_ID:String = WORKSPACES_HEADER_ID + "ExportRSS";
+		
+		public static const WORKSPACES_EXPORT_WORKSPACE_LINK:String = WORKSPACES_HEADER_ID + "ExportWorkspaceLink";
 		
 		// workspaces body
 		

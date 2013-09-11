@@ -1,3 +1,18 @@
+/*******************************************************************************
+ * Copyright 2012 The Infinit.e Open Source Project
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
 package com.ikanow.infinit.e.data_model.driver;
 
 import java.io.BufferedReader;
@@ -17,15 +32,22 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.io.IOUtils;
 import org.bson.types.ObjectId;
 
+import com.google.common.collect.HashMultimap;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonPrimitive;
+import com.ikanow.infinit.e.data_model.InfiniteEnums.HarvestEnum;
 import com.ikanow.infinit.e.data_model.api.ApiManager;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
@@ -43,9 +65,14 @@ import com.ikanow.infinit.e.data_model.api.social.sharing.SharePojoApiMap;
 import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
 import com.ikanow.infinit.e.data_model.store.custom.mapreduce.CustomMapReduceJobPojo;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
+import com.ikanow.infinit.e.data_model.store.feature.entity.EntityFeaturePojo;
 import com.ikanow.infinit.e.data_model.store.social.community.CommunityPojo;
 import com.ikanow.infinit.e.data_model.store.social.person.PersonPojo;
 import com.ikanow.infinit.e.data_model.store.social.sharing.SharePojo;
+import com.ikanow.infinit.e.data_model.store.social.sharing.SharePojo.ShareCommunityPojo;
+import com.mongodb.BasicDBObject;
+import com.mongodb.DBObject;
+import com.mongodb.util.JSON;
 
 public class InfiniteDriver 
 {
@@ -56,8 +83,9 @@ public class InfiniteDriver
 	private String apiRoot;
 	private String user;
 	private String password;
+	private String apiKey = null;
 	
-	private static String cookie = null;
+	private String cookie = null;
 	
 	public InfiniteDriver()
 	{
@@ -73,6 +101,20 @@ public class InfiniteDriver
 		else
 			apiRoot = apiRootUrl;
 		
+		user = DEFAULT_USER;
+		password = DEFAULT_PASSWORD;
+	}
+	
+	public InfiniteDriver(String apiRootUrl, String apiKey)
+	{
+		if (apiRootUrl == null)
+			apiRoot = DEFAULT_API_ROOT;
+		else
+			apiRoot = apiRootUrl;
+		
+		this.apiKey = "infinitecookie=api:" + apiKey + ";"; // (use it like a cookie to avoid localhost dev issues)
+		
+		// (unused)
 		user = DEFAULT_USER;
 		password = DEFAULT_PASSWORD;
 	}
@@ -115,6 +157,12 @@ public class InfiniteDriver
 	
 	// AUTHENTICATION
 	
+	// If you already have a valid cookie, then use that:
+	
+	public void useExistingCookie(String existingCookie) {
+		cookie = "infinitecookie=" + existingCookie + "; Path=/; HttpOnly";
+	}
+	
 	/**
 	 * Logs the user in specified by setUser() using the password
 	 * specified by setPassword().
@@ -156,6 +204,9 @@ public class InfiniteDriver
 	 */
 	public Boolean login(String username, String password, ResponseObject responseObject)
 	{
+		if (null != apiKey) { // Have an API key, don't need to login....
+			return true;
+		}		
 		cookie = null;
 		try {
 			String address = apiRoot + "auth/login/" + username + "/" + encryptEncodePassword(password);
@@ -176,6 +227,8 @@ public class InfiniteDriver
 	
 	public Boolean adminLogin(String username, String password, ResponseObject responseObject)
 	{
+		// Allow this even if have an API key because it's currently the only way of knowing if you're an admin
+		
 		cookie = null;
 		try {
 			String address = apiRoot + "auth/login/admin/" + username + "/" + encryptEncodePassword(password);
@@ -200,6 +253,9 @@ public class InfiniteDriver
 	 */
 	public Boolean logout()
 	{
+		if (null == cookie) { // not logged in, eg have an API key
+			return true;
+		}
 		try {
 			String address = apiRoot + "auth/logout/";
 			String logoutResult;
@@ -218,6 +274,31 @@ public class InfiniteDriver
 		}
 	}
 
+	/**
+	 * Sends a keepalive message
+	 * @return true if user is currently logged in
+	 */
+	public Boolean sendKeepalive() {
+		return sendKeepalive(false);
+	}
+	public Boolean sendKeepalive(boolean bAdminOnly) {
+		
+		try {			
+			String address = apiRoot + "auth/keepalive";
+			if (bAdminOnly) {
+				address += "/admin";
+			}
+			String logoutResult;
+			logoutResult = sendRequest(address, null);
+			ResponsePojo response = ResponsePojo.fromApi(logoutResult, ResponsePojo.class);
+			return response.getResponse().isSuccess();
+		}
+		catch (Exception e) 
+		{
+			return false;
+		}
+	}
+	
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	
 	// SOCIAL - COMMUNITIES
@@ -386,6 +467,27 @@ public class InfiniteDriver
 		return false;
 	}
 	
+	public Boolean updateCommunityMemberType(String communityId, String personId, String userType, ResponseObject responseObject)
+	{
+		try
+		{
+			String updateCommunityMemberUrl = apiRoot + "social/community/member/update/type/" + URLEncoder.encode(communityId,"UTF-8") + 
+			"/" + URLEncoder.encode(personId,"UTF-8") + "/" + URLEncoder.encode(userType,"UTF-8");
+			String updateResult = sendRequest(updateCommunityMemberUrl, null);
+			ResponsePojo internal_responsePojo = ResponsePojo.fromApi(updateResult, ResponsePojo.class); 
+			ResponseObject internal_ro = internal_responsePojo.getResponse();
+			responseObject = shallowCopy(responseObject, internal_ro);
+
+			return responseObject.isSuccess();
+		}
+		catch (Exception e)
+		{
+			e.printStackTrace();
+		}
+
+		return false;
+	}
+	
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	
 	// SOCIAL - SHARES
@@ -424,7 +526,7 @@ public class InfiniteDriver
 		}
 		return null;
 	}
-	//TOTEST
+	//TESTED
 	
 	public SharePojo getShare(String shareId, ResponseObject responseObject)
 	{
@@ -449,7 +551,8 @@ public class InfiniteDriver
 	
 	public SharePojo addShareJSON(String title, String description, String type, String jsonString , ResponseObject responseObject)
 	{
-		try{
+		try
+		{
 			String addShareAddress = apiRoot + "social/share/add/json/" + URLEncoder.encode(type, "UTF-8") + "/" + URLEncoder.encode(title,"UTF-8") + "/" + URLEncoder.encode(description,"UTF-8");
 			String addResult = sendRequest(addShareAddress, jsonString);
 			ResponsePojo internal_responsePojo = ResponsePojo.fromApi(addResult, ResponsePojo.class, SharePojo.class, new SharePojoApiMap(null)); 
@@ -509,7 +612,8 @@ public class InfiniteDriver
 	
 	public Boolean addShareToCommunity(String shareId, String comment, String communityId, ResponseObject responseObject)
 	{
-		try{
+		try
+		{
 			String addCommunityAddress = apiRoot + "social/share/add/community/" + shareId + "/" + URLEncoder.encode(comment,"UTF-8") + "/" + URLEncoder.encode(communityId,"UTF-8");
 			String updateResult = sendRequest(addCommunityAddress, null);
 			ResponsePojo internal_responsePojo = ResponsePojo.fromApi(updateResult, ResponsePojo.class); 
@@ -527,6 +631,25 @@ public class InfiniteDriver
 		return false;
 	}
 	
+	public Boolean removeShareFromCommunity(String shareId, String communityId, ResponseObject responseObject)
+	{
+		try{
+			String addCommunityAddress = apiRoot + "social/share/remove/community/" + shareId + "/" + URLEncoder.encode(communityId,"UTF-8");
+			String updateResult = sendRequest(addCommunityAddress, null);
+			ResponsePojo internal_responsePojo = ResponsePojo.fromApi(updateResult, ResponsePojo.class); 
+			ResponseObject internal_ro = internal_responsePojo.getResponse();
+			responseObject = shallowCopy(responseObject, internal_ro);
+
+			return responseObject.isSuccess();
+
+		}
+		catch (Exception e)
+		{
+			e.printStackTrace();
+		}
+
+		return false;
+	}
 	
 
 	//////////////////////////////////////////////////////////////////////////////////////////////
@@ -1072,12 +1195,325 @@ public class InfiniteDriver
 	//TESTED
 	
 	//////////////////////////////////////////////////////////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////////////////
+	
+	// ALIASES
+	
+	// UPDATE, REMOVE, AND GET
+	
+	// This is not super-efficient code
+	
+	public Set<String> updateAliases(Collection<EntityFeaturePojo> aliasesToUpdate, String communityIdStr, boolean bUpsert, ResponseObject response) {
+		return updateAliases(aliasesToUpdate, communityIdStr, bUpsert, null, response);
+		
+	}
+	public Set<String> removeAliases(Collection<String> aliasesToRemove, String communityIdStr, ResponseObject response) {
+		return removeAliases(aliasesToRemove, communityIdStr, null, response);
+		
+	}
+	// (Only use this version if immediately called after getAliases since none of this is in any way atomic)
+	public Set<String> updateAliases(Collection<EntityFeaturePojo> aliasesToUpdate, String communityIdStr, boolean bUpsert, Map<String, List<SharePojo>> aliasMapping, ResponseObject response) {
+		if (null == aliasMapping) {
+			aliasMapping = new HashMap<String, List<SharePojo>>();
+			this.getAliases(communityIdStr, aliasMapping, response);
+			if (!response.isSuccess()) {
+				return null;
+			}
+		}//TESTED
+		Map<ObjectId, BasicDBObject> shareContentCache = new HashMap<ObjectId, BasicDBObject>();
+		List<SharePojo> sharesToUpdate = new LinkedList<SharePojo>();
+		// Step through the aliases, update the content
+		// Loop 1 update
+		SharePojo shareForNewAliases = null;
+		Set<String> erroredAliases = new HashSet<String>();
+		HashMultimap<ObjectId, String> shareToAliasMapping = HashMultimap.create();
+		for (EntityFeaturePojo alias: aliasesToUpdate) {
+			List<SharePojo> sharesForThisAlias = aliasMapping.get(alias.getIndex());
+			if ((null == sharesForThisAlias) && bUpsert) { // This is a new alias and not ignoring upserts
+				if (null == shareForNewAliases) { // Haven't yet assigned such a share
+					shareForNewAliases = this.upsertSharePrep(communityIdStr, shareContentCache, aliasMapping);
+					if (null == shareForNewAliases) {
+						erroredAliases.add(alias.getIndex());
+						continue;
+					}
+					sharesToUpdate.add(shareForNewAliases);
+				}
+				BasicDBObject shareContent =  shareContentCache.get(shareForNewAliases.get_id()); // (exists by construction)
+				shareContent.put(alias.getIndex(), alias.toDb());
+				shareToAliasMapping.put(shareForNewAliases.get_id(), alias.getIndex());
+			}//TESTED
+			else if (null != sharesForThisAlias) {
+				for (SharePojo share: sharesForThisAlias) {
+					BasicDBObject shareContent =  shareContentCache.get(share.get_id());
+					if (null == shareContent) {
+						try {
+							String json = share.getShare();
+							shareContent = (BasicDBObject) JSON.parse(json);
+							shareContentCache.put(share.get_id(), shareContent);
+							sharesToUpdate.add(share);
+						}
+						catch (Exception e) {
+							erroredAliases.add(alias.getIndex());							
+						}
+					}//TESTED
+					shareContent.put(alias.getIndex(), alias.toDb());
+					shareToAliasMapping.put(share.get_id(), alias.getIndex());
+				}//TESTED
+			}
+			else {
+				erroredAliases.add(alias.getIndex());	
+			}
+			// end loop over updating shares
+		}//end loop over aliases
+
+		// Loop 2 now update all the shares
+		boolean bSucceededUpdatingSomething = false;
+		for (SharePojo share: sharesToUpdate) {
+			BasicDBObject shareContent =  shareContentCache.get(share.get_id()); // (exists by construction)
+			String shareIdStr = share.get_id().toString();
+			this.updateShareJSON(shareIdStr, share.getTitle(), share.getDescription(), "infinite-entity-alias", shareContent.toString(), response);
+			bSucceededUpdatingSomething |= response.isSuccess();
+			if (!response.isSuccess()) {
+				Set<String> failedAliases = shareToAliasMapping.get(share.get_id());
+				if (null != failedAliases) {
+					erroredAliases.addAll(failedAliases);
+				}
+			}
+		}//TESTED		
+		
+		response.setSuccess(bSucceededUpdatingSomething); 
+		return erroredAliases;
+	}
+	
+	// (Only use this version if immediately called after getAliases since none of this is in any way atomic)
+	public Set<String> removeAliases(Collection<String> aliasesToRemove, String communityIdStr, Map<String, List<SharePojo>> aliasMapping, ResponseObject response) {
+		if (null == aliasMapping) {
+			aliasMapping = new HashMap<String, List<SharePojo>>();
+			this.getAliases(communityIdStr, aliasMapping, response);
+			if (!response.isSuccess()) {
+				return null;
+			}
+		}//TESTED
+		Map<ObjectId, BasicDBObject> shareContentCache = new HashMap<ObjectId, BasicDBObject>();
+		List<SharePojo> sharesToUpdate = new LinkedList<SharePojo>();
+		// Step through the aliases, update the content
+		// Loop 1 update
+		Set<String> erroredAliases = new HashSet<String>();
+		HashMultimap<ObjectId, String> shareToAliasMapping = HashMultimap.create();
+		for (String alias: aliasesToRemove) {
+			List<SharePojo> sharesForThisAlias = aliasMapping.get(alias);
+			if (null != sharesForThisAlias) {
+				for (SharePojo share: sharesForThisAlias) {
+					BasicDBObject shareContent =  shareContentCache.get(share.get_id());
+					if (null == shareContent) {
+						try {
+							String json = share.getShare();
+							shareContent = (BasicDBObject) JSON.parse(json);
+							shareContentCache.put(share.get_id(), shareContent);
+							sharesToUpdate.add(share);
+						}
+						catch (Exception e) {
+							erroredAliases.add(alias);							
+						}
+					}//TESTED
+					shareContent.remove(alias);
+					shareToAliasMapping.put(share.get_id(), alias);
+				}//TESTED
+			}
+			// end loop over updating shares
+		}//end loop over aliases
+
+		// Loop 2 now update all the shares
+		boolean bSucceededUpdatingSomething = false;
+		for (SharePojo share: sharesToUpdate) {
+			BasicDBObject shareContent =  shareContentCache.get(share.get_id()); // (exists by construction)
+			String shareIdStr = share.get_id().toString();
+			if (shareContent.isEmpty()) { // Remove the share
+				this.removeShare(shareIdStr, response);
+				if (!response.isSuccess()) {
+					Set<String> failedAliases = shareToAliasMapping.get(share.get_id());
+					if (null != failedAliases) {
+						erroredAliases.addAll(failedAliases);
+					}
+				}
+			}//TESTED
+			else {
+				this.updateShareJSON(shareIdStr, share.getTitle(), share.getDescription(), "infinite-entity-alias", shareContent.toString(), response);
+				bSucceededUpdatingSomething |= response.isSuccess();
+				if (!response.isSuccess()) {
+					Set<String> failedAliases = shareToAliasMapping.get(share.get_id());
+					if (null != failedAliases) {
+						erroredAliases.addAll(failedAliases);
+					}
+				}
+			}//TESTED
+		}//TESTED		
+		
+		response.setSuccess(bSucceededUpdatingSomething); 
+		return erroredAliases;
+	}
+	// THIS IS BOTH PUBLIC AND A UTILITY FOR THE OTHER CALLS
+	
+	public Map<String, EntityFeaturePojo> getAliases(String communityIdStr, ResponseObject response) {
+		return getAliases(communityIdStr, null, response);
+	}
+	
+	public Map<String, EntityFeaturePojo> getAliases(String communityIdStr, Map<String, List<SharePojo>> aliasMapping, ResponseObject response) {
+		
+		// Get the shares with the right type and community
+		List<SharePojo> shareList = this.searchShares("community", communityIdStr, "infinite-entity-alias", response);
+		if (!response.isSuccess()) {
+			return null;
+		}
+		// Generate a list
+		HashMap<String, EntityFeaturePojo> masterAliases = new HashMap<String, EntityFeaturePojo>();
+		
+		if (null != shareList) {
+			for (SharePojo share: shareList) {
+				populateAliasTableFromShare(share, masterAliases, aliasMapping);
+			}
+		}
+		response.setSuccess(true);
+		return masterAliases;
+	}//TESTED
+	
+	// ALIAS UTILITIES:
+	
+	private SharePojo upsertSharePrep(String communityIdStr, Map<ObjectId, BasicDBObject> shareContentCache, Map<String, List<SharePojo>> aliasMapping) {
+		SharePojo shareForNewAliases = null;
+		BasicDBObject contentForNewAliases = null;
+		for (List<SharePojo> shares: aliasMapping.values()) {
+			if (!shares.isEmpty()) {
+				shareForNewAliases = shares.iterator().next();
+				try {
+					String json = shareForNewAliases.getShare();
+					contentForNewAliases = (BasicDBObject) JSON.parse(json);
+					shareContentCache.put(shareForNewAliases.get_id(), contentForNewAliases);
+					break;
+				}
+				catch (Exception e) {} // Try a different share
+			}
+		}//TESTED
+		if (null == shareForNewAliases) { // Didn't find one, so going to have to create something
+			EntityFeaturePojo discard = new EntityFeaturePojo();
+			discard.setDisambiguatedName("DISCARD");
+			discard.setType("SPECIAL");
+			discard.setIndex("DISCARD");
+			contentForNewAliases = new BasicDBObject("DISCARD", discard.toDb());
+			ResponseObject response = new ResponseObject();
+			shareForNewAliases = this.addShareJSON("Alias Share " + communityIdStr, "An alias share for a specific community", "infinite-entity-alias", "{}", response);
+			if ((null == shareForNewAliases) || !response.isSuccess()) {
+				return null;
+			}//TESTED
+			
+			// Remove share from personal community
+			try {
+				ShareCommunityPojo currCommunity =  shareForNewAliases.getCommunities().iterator().next();
+				String removeCommunityIdStr = currCommunity.get_id().toString();
+				if (!communityIdStr.equals(removeCommunityIdStr)) { // (obv not if this is my community somehow, don't think that's possible)
+					this.removeShareFromCommunity(shareForNewAliases.get_id().toString(), removeCommunityIdStr, response);
+					if (!response.isSuccess()) {
+						return null;				
+					}
+				}
+			}
+			catch (Exception e) {} // do nothing I guess, not in any communities?
+			
+			this.addShareToCommunity(shareForNewAliases.get_id().toString(), "aliasComm", communityIdStr, response);
+			if (!response.isSuccess()) {
+				return null;				
+			}
+		}//TESTED
+		shareContentCache.put(shareForNewAliases.get_id(), contentForNewAliases);
+		return shareForNewAliases;
+	}//TESTED
+	
+	// THIS IS A SUBSET OF com.ikanow.infinit.e.api.knowledge.aliases.AliasLookupTable
+	private void populateAliasTableFromShare(SharePojo share, HashMap<String, EntityFeaturePojo> masterAliases,  Map<String, List<SharePojo>> aliasMapping) {
+		String json = share.getShare();
+		if (null != json) {
+			try {
+				DBObject dbo = (DBObject) JSON.parse(json);
+				if (null != dbo) {
+					for (Object entryObj: dbo.toMap().entrySet()) {
+						@SuppressWarnings("unchecked")
+						Map.Entry<String, Object> entry = (Map.Entry<String, Object>)entryObj;
+						
+						String masterAlias = entry.getKey();
+						
+						BasicDBObject entityFeatureObj = (BasicDBObject) entry.getValue();
+						EntityFeaturePojo aliasInfo = null;
+						try {
+							aliasInfo = EntityFeaturePojo.fromDb(entityFeatureObj, EntityFeaturePojo.class);
+						}
+						catch (Exception e) {
+							continue;
+						}
+						if (null == aliasInfo.getIndex()) {
+							aliasInfo.setIndex(masterAlias);
+						}
+
+						if (null != aliasInfo) { // (allow getAlias to be null/empty)
+							//(overwrite duplicates)
+							masterAliases.put(aliasInfo.getIndex(), aliasInfo);
+							if (null != aliasMapping) {
+								List<SharePojo> shareList = aliasMapping.get(aliasInfo.getIndex());
+								if (null == shareList) {
+									shareList = new LinkedList<SharePojo>();
+									aliasMapping.put(aliasInfo.getIndex(), shareList);
+								}
+								shareList.add(share);
+							}
+						}
+					}
+				}
+			}
+			catch (Exception e) {
+				
+			} // not Json, just carry on...
+		}		
+	}//TESTED
+	
+	
+	//////////////////////////////////////////////////////////////////////////////////////////////
 	
 	// UTILITY	
 	
+	public boolean hasSourceHarvested(String sourceId)
+	{
+		ResponseObject ro = new ResponseObject();
+		return hasSourceHarvested(getSource(sourceId, ro));
+	}
+	
+	public boolean hasSourceHarvested(SourcePojo source)
+	{
+		if ( source != null )
+		{
+			if ( source.getHarvestStatus() != null && source.getHarvestStatus().getHarvested() != null )
+			{
+				if ( source.getHarvestStatus().getHarvest_status() == HarvestEnum.in_progress && source.getHarvestStatus().getDoccount() != null && source.getHarvestStatus().getDoccount() > 0)
+				{
+					//if the source is in progress but has a doc count, it has already completed once
+					return true;
+				}
+				else if ( source.getHarvestStatus().getHarvested() != null )
+				{
+					//if the source is not in progress but has a harvested date, it has completed atleast once
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+		
+	public boolean isAdmin()
+	{
+		return this.sendKeepalive(true);
+	}
+	
 	///////// Request Calls	
 	
-	public static String sendRequest(String urlAddress, String postData)
+	public String sendRequest(String urlAddress, String postData)
 	{
 		try {
 			if (postData == null)
@@ -1091,7 +1527,7 @@ public class InfiniteDriver
 	}
 
 
-	private static String sendPostRequest(String urlAddress, String data) throws MalformedURLException, IOException
+	private String sendPostRequest(String urlAddress, String data) throws MalformedURLException, IOException
 	{	
 		String result = "";
 
@@ -1099,6 +1535,8 @@ public class InfiniteDriver
 
 		if ( cookie != null )
 			urlConnection.setRequestProperty("Cookie", cookie);
+		if ( apiKey != null )
+			urlConnection.setRequestProperty("Cookie", apiKey);
 
 		urlConnection.setDoOutput(true);
 		urlConnection.setRequestProperty("Accept-Charset", "UTF-8");
@@ -1140,12 +1578,15 @@ public class InfiniteDriver
 	
 	
 
-	public static String sendGetRequest(String urlAddress) throws Exception
+	public String sendGetRequest(String urlAddress) throws Exception
 	{
 		URL url = new URL(urlAddress);
 		URLConnection urlConnection = url.openConnection();
 		if ( cookie != null )
 			urlConnection.setRequestProperty("Cookie", cookie);
+		if ( apiKey != null )
+			urlConnection.setRequestProperty("Cookie", apiKey);
+			
 		((HttpURLConnection)urlConnection).setRequestMethod("GET");
 
 		//read back result

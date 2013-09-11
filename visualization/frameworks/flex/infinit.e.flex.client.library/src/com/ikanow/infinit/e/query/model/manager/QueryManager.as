@@ -33,6 +33,7 @@ package com.ikanow.infinit.e.query.model.manager
 	import com.ikanow.infinit.e.shared.model.vo.QueryOutputDocumentOptions;
 	import com.ikanow.infinit.e.shared.model.vo.QueryOutputFilterOptions;
 	import com.ikanow.infinit.e.shared.model.vo.QueryScoreOptions;
+	import com.ikanow.infinit.e.shared.model.vo.QueryScoreOptionsRequest;
 	import com.ikanow.infinit.e.shared.model.vo.QueryString;
 	import com.ikanow.infinit.e.shared.model.vo.QueryStringRequest;
 	import com.ikanow.infinit.e.shared.model.vo.QuerySuggestion;
@@ -45,10 +46,13 @@ package com.ikanow.infinit.e.query.model.manager
 	import com.ikanow.infinit.e.shared.model.vo.ui.ServiceResult;
 	import com.ikanow.infinit.e.shared.model.vo.ui.ServiceStatistics;
 	import com.ikanow.infinit.e.shared.util.CollectionUtil;
+	import com.ikanow.infinit.e.shared.util.ExternalInterfaceUtility;
 	import com.ikanow.infinit.e.shared.util.JSONUtil;
 	import com.ikanow.infinit.e.shared.util.ObjectTranslatorUtil;
 	import com.ikanow.infinit.e.shared.util.QueryUtil;
 	import com.ikanow.infinit.e.shared.util.ServiceUtil;
+	import com.ikanow.infinit.e.widget.library.data.WidgetDragObject;
+	import flash.external.*;
 	import flash.utils.setTimeout;
 	import mx.collections.ArrayCollection;
 	import mx.collections.SortField;
@@ -161,6 +165,12 @@ package com.ikanow.infinit.e.query.model.manager
 		
 		[Bindable]
 		/**
+		 * The summary for the last query summary (settings component)
+		 */
+		public var lastQuerySettingsSummary:String;
+		
+		[Bindable]
+		/**
 		 * The statistics returned from a query
 		 */
 		public var queryStatistics:ServiceStatistics;
@@ -207,6 +217,12 @@ package com.ikanow.infinit.e.query.model.manager
 		 */
 		public var selectedQueryTerm:QueryTerm;
 		
+		
+		/**
+		 * Variable for first time query runs
+		 */
+		public var refreshing:Boolean = false;
+		
 		//======================================
 		// private properties 
 		//======================================
@@ -240,7 +256,7 @@ package com.ikanow.infinit.e.query.model.manager
 			queryString.input = lastQueryString.input;
 			
 			// set the last query string
-			lastQueryString = ObjectTranslatorUtil.translateObject( queryString, new QueryString() ) as QueryString;
+			lastQueryString = queryString.getOptions();
 		}
 		
 		/**
@@ -267,6 +283,55 @@ package com.ikanow.infinit.e.query.model.manager
 		public function clearLastQuery():void
 		{
 			lastQuerySummary = null;
+			lastQuerySettingsSummary = null;
+		}
+		
+		public function createAdvancedQuery():Object
+		{
+			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, QueryUtil.getAggregationOptionsObject( aggregationOptions ), filterOptions );
+			
+			// set to wildcard if no query terms
+			if ( queryTerms.length == 0 )
+			{
+				var queryTerm:QueryTerm = new QueryTerm();
+				queryTerm.etext = Constants.WILDCARD;
+				queryLogic = QueryConstants.DEFAULT_QUERY_LOGIC;
+				queryTerms.addItem( queryTerm );
+			}
+			
+			// add the query terms
+			queryString.qt = queryTerms.source;
+			
+			// add the query logic 
+			queryString.logic = queryLogic;
+			
+			var communtityIds:String = CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );
+			
+			queryString.communityIds = communtityIds.split( Constants.STRING_ARRAY_DELIMITER );
+			
+			// set the query term options
+			if ( setup && setup.queryString && setup.queryString.qtOptions )
+				queryString.qtOptions = setup.queryString.qtOptions;
+			else
+				queryString.qtOptions = null;
+			
+			var sourcesAll:ArrayCollection = new ArrayCollection( sources.source );
+			var sourcesCurrent:ArrayCollection = CollectionUtil.getSelectedItems( sourcesAll, true );
+			var sourcesAvailable:ArrayCollection = CollectionUtil.getSelectedItems( sourcesAll, false );
+			
+			// update the sources input if the user has not selected all of the sources
+			if ( sourcesCurrent.length > 0 && sourcesAvailable.length > 0 )
+			{
+				// use the collection that has the least amount of sources and mark srcInclude as true or false depending
+				var useCurrentSources:Boolean = sourcesCurrent.length < sourcesAvailable.length;
+				var sourcesCollection:ArrayCollection = useCurrentSources ? sourcesCurrent : sourcesAvailable;
+				
+				queryString.input = new Object();
+				queryString.input[ QueryConstants.SRC_INCLUDE ] = useCurrentSources;
+				queryString.input[ QueryConstants.SOURCES ] = CollectionUtil.getArrayFromString( CollectionUtil.getStringFromArrayCollectionField( sourcesCollection, QueryConstants.SOURCE_KEY ) );
+			}
+			
+			return QueryUtil.getQueryStringObject( queryString );
 		}
 		
 		/**
@@ -313,6 +378,7 @@ package com.ikanow.infinit.e.query.model.manager
 			lastQueryString = null;
 			lastQueryStringRequest = null;
 			lastQuerySummary = null;
+			lastQuerySettingsSummary = null;
 			lastSuggestionKeywordString = "";
 			documentOptions = null
 			aggregationOptions = null;
@@ -333,7 +399,7 @@ package com.ikanow.infinit.e.query.model.manager
 		public function runAdvancedQuery():void
 		{
 			// create a new query string
-			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, aggregationOptions, filterOptions );
+			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, QueryUtil.getAggregationOptionsObject( aggregationOptions ), filterOptions );
 			
 			// set to wildcard if no query terms
 			if ( queryTerms.length == 0 )
@@ -392,6 +458,7 @@ package com.ikanow.infinit.e.query.model.manager
 			
 			// set last query summary
 			lastQuerySummary = QueryUtil.getQueryStringSummary( lastQueryString.qt, lastQueryString.logic );
+			lastQuerySettingsSummary = QueryUtil.getQueryStringSettingsSummary( lastQueryString );
 			
 			// run the query
 			var queryEvent:QueryEvent = new QueryEvent( QueryEvent.QUERY );
@@ -421,19 +488,19 @@ package com.ikanow.infinit.e.query.model.manager
 		public function runSimpleQuery( querySuggestion:QuerySuggestion ):void
 		{
 			// create a new query string
-			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, aggregationOptions, filterOptions );
+			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, QueryUtil.getAggregationOptionsObject( aggregationOptions ), filterOptions );
 			
 			// set the query term
 			queryString.qt = [ QueryUtil.getQueryTermFromSuggestion( querySuggestion ) ];
 			
 			// run the query
-			runQuery( queryString, false );
+			runQuery( queryString, true );
 		}
 		
 		public function saveAdvancedQuery():TypedQueryString
 		{
 			// create a new query string
-			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, aggregationOptions, filterOptions );
+			var queryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, QueryUtil.getAggregationOptionsObject( aggregationOptions ), filterOptions );
 			
 			// set to wildcard if no query terms
 			if ( queryTerms.length == 0 )
@@ -476,8 +543,8 @@ package com.ikanow.infinit.e.query.model.manager
 				queryString.input[ QueryConstants.SOURCES ] = CollectionUtil.getArrayFromString( CollectionUtil.getStringFromArrayCollectionField( sourcesCollection, QueryConstants.SOURCE_KEY ) );
 			}
 			
-			// set the last query string
-			var tempQueryString:QueryString = ObjectTranslatorUtil.translateObject( queryString.clone(), new QueryString() ) as QueryString;
+			// set the last query string (handle score differently - we have already got the code in place to clone this programmatically)
+			var tempQueryString:QueryString = queryString.getOptions();
 			
 			// add the last query string to the recent queries collection
 			return QueryUtil.getTypedQueryString( tempQueryString, QueryStringTypes.QUERY );
@@ -518,8 +585,11 @@ package com.ikanow.infinit.e.query.model.manager
 			
 			currentUser = value;
 			
-			if ( setup )
+			if ( setup && !refreshing )
+			{
 				initQueryStrings();
+			}
+			refreshing = false;
 		}
 		
 		/**
@@ -619,8 +689,11 @@ package com.ikanow.infinit.e.query.model.manager
 			
 			setup = value;
 			
-			if ( currentUser )
+			if ( currentUser && !refreshing )
+			{
 				initQueryStrings();
+			}
+			refreshing = false;
 		}
 		
 		/**
@@ -692,6 +765,109 @@ package com.ikanow.infinit.e.query.model.manager
 			}
 		}
 		
+		/**
+		 * set the query logic string to be used for the query
+		 * @param value
+		 */
+		public function updateQueryFromWidgetDragDrop( widgetInfo:WidgetDragObject ):void
+		{
+			//ENTS
+			
+			if ( ( null != widgetInfo.entities ) && ( widgetInfo.entities.length > 0 ) )
+			{
+				newQuery = QueryUtil.getQueryStringObject( currentQueryStringRequest );
+				
+				qts = new ArrayCollection();
+				
+				for each ( ent in widgetInfo.entities )
+				{
+					qt = new Object();
+					qt[ 'entity' ] = ent[ 'index' ];
+					qts.addItem( qt );
+				}
+				newQuery[ 'qt' ] = qts;
+				
+				queryString = ObjectTranslatorUtil.translateObject( newQuery, new QueryString, null, false, true ) as QueryString;
+				
+				// Call update and navigate once per doc
+				queryEvent = new QueryEvent( QueryEvent.UPDATE_QUERY_NAVIGATE );
+				queryEvent.widgetInfo = widgetInfo;
+				queryEvent.searchType = null;
+				queryEvent.queryString = queryString;
+				dispatcher.dispatchEvent( queryEvent );
+			}
+			
+			// DOCS (ONLY IF ENTS NOT SPECIFIED)
+			
+			else if ( ( null != widgetInfo.documents ) && ( widgetInfo.documents.length > 0 ) )
+			{
+				for each ( var doc:Object in widgetInfo.documents )
+				{
+					var newQuery:Object = QueryUtil.getQueryStringObject( currentQueryStringRequest );
+					var qts:ArrayCollection = new ArrayCollection();
+					
+					var entities:ArrayCollection = new ArrayCollection( doc[ 'entities' ] );
+					
+					for each ( var ent:Object in entities )
+					{
+						var qt:Object = new Object();
+						qt[ 'entity' ] = ent[ 'index' ];
+						qts.addItem( qt );
+					}
+					newQuery[ 'qt' ] = qts;
+					var queryString:QueryString = ObjectTranslatorUtil.translateObject( newQuery, new QueryString, null, false, true ) as QueryString;
+					
+					// Call update and navigate once per doc
+					var queryEvent:QueryEvent = new QueryEvent( QueryEvent.UPDATE_QUERY_NAVIGATE );
+					queryEvent.widgetInfo = widgetInfo;
+					queryEvent.searchType = null;
+					queryEvent.queryString = queryString;
+					dispatcher.dispatchEvent( queryEvent );
+				}
+			}
+			
+			// ASSOCS
+			
+			if ( ( null != widgetInfo.associations ) && ( widgetInfo.associations.length > 0 ) )
+			{
+				newQuery = QueryUtil.getQueryStringObject( currentQueryStringRequest );
+				
+				qts = new ArrayCollection();
+				
+				for each ( var assoc:Object in widgetInfo.associations )
+				{
+					qt = new Object();
+					var qtAssoc:Object = new Object();
+					var qtAssocEnt1:Object = new Object();
+					var qtAssocEnt2:Object = new Object();
+					qtAssocEnt1[ 'entity' ] = assoc[ 'entity1_index' ];
+					qtAssocEnt2[ 'entity' ] = assoc[ 'entity2_index' ];
+					qtAssoc[ 'entity1' ] = qtAssocEnt1;
+					qtAssoc[ 'entity2' ] = qtAssocEnt2;
+					qt[ 'event' ] = qtAssoc; // (should be assoc, this isn't event forwwards compatible!)
+					qts.addItem( qt );
+				}
+				newQuery[ 'qt' ] = qts;
+				queryString = ObjectTranslatorUtil.translateObject( newQuery, new QueryString, null, false, true ) as QueryString;
+				
+				// Call update and navigate once per doc
+				queryEvent = new QueryEvent( QueryEvent.UPDATE_QUERY_NAVIGATE );
+				queryEvent.widgetInfo = widgetInfo;
+				queryEvent.searchType = null;
+				queryEvent.queryString = queryString;
+				dispatcher.dispatchEvent( queryEvent );
+			}
+			
+			// Once we're done, then navigate
+			var navigationEvent:NavigationEvent = null;
+			navigationEvent = new NavigationEvent( NavigationEvent.NAVIGATE_BY_ID );
+			navigationEvent.navigationItemId = NavigationConstants.QUERY_BUILDER_ID;
+			dispatcher.dispatchEvent( navigationEvent );
+			navigationEvent = new NavigationEvent( NavigationEvent.NAVIGATE_BY_ID );
+			navigationEvent.navigationItemId = NavigationConstants.WORKSPACES_QUERY_ID;
+			dispatcher.dispatchEvent( navigationEvent );
+		}
+		
 		//======================================
 		// protected methods 
 		//======================================
@@ -729,7 +905,8 @@ package com.ikanow.infinit.e.query.model.manager
 		protected function getSuggestions( collection:ArrayCollection ):ArrayCollection
 		{
 			var suggestionsNew:ArrayCollection = new ArrayCollection();
-			var lastSearchTerm:String = ServiceUtil.replaceMultipleWhitespace( StringUtil.trim( lastSuggestionKeywordString ) ).toLowerCase();
+			var lastSearchTermWithCase:String = ServiceUtil.replaceMultipleWhitespace( StringUtil.trim( lastSuggestionKeywordString ) );
+			var lastSearchTerm:String = lastSearchTermWithCase.toLowerCase();
 			
 			// add exact text suggestion
 			var etext:QuerySuggestion = new QuerySuggestion();
@@ -740,7 +917,7 @@ package com.ikanow.infinit.e.query.model.manager
 			
 			// add free text suggestion
 			var ftext:QuerySuggestion = new QuerySuggestion();
-			ftext.value = lastSearchTerm;
+			ftext.value = lastSearchTermWithCase;
 			ftext.type = EntityTypes.FREE_TEXT;
 			ftext.dimension = QueryDimensionTypes.FREE_TEXT;
 			suggestionsNew.addItem( ftext );
@@ -773,7 +950,6 @@ package com.ikanow.infinit.e.query.model.manager
 			return suggestionsNew;
 		}
 		
-		
 		/**
 		 * Initialize the query strings and run the first query
 		 */
@@ -782,12 +958,19 @@ package com.ikanow.infinit.e.query.model.manager
 			if ( !currentUser && !setup )
 				return;
 			
-			setup.communityIds = QueryUtil.getUserCommunityIdsArrayFromArray( setup.communityIds, currentUser.communities );
+			var communityIds:Array = QueryUtil.getUserCommunityIdsArrayFromArray( setup.communityIds, currentUser.communities );
+			
+			setup.communityIds = communityIds;
 			
 			initRecentQueries();
 			
+			overrideSetupQuery(); // from URL params if possible
+			
 			if ( !setup.queryString )
 				return;
+			
+			// OK if I'm here then I'm going to issue the query ... here's a chance to override the saved options
+			// from the URL:
 			
 			// create a query string request (also updates aggregationOptions, documentOptions, filterOptions, scoreOptions)
 			var queryString:QueryStringRequest = this.updateQuery( setup.queryString );
@@ -806,6 +989,7 @@ package com.ikanow.infinit.e.query.model.manager
 			
 			// set last query summary
 			lastQuerySummary = QueryUtil.getQueryStringSummary( lastQueryString.qt, lastQueryString.logic );
+			lastQuerySettingsSummary = QueryUtil.getQueryStringSettingsSummary( lastQueryString );
 			
 			// run the first query
 			runFirstQuery( queryString );
@@ -813,6 +997,7 @@ package com.ikanow.infinit.e.query.model.manager
 			// add the last query string to the recent queries collection
 			recentQueries.addItem( QueryUtil.getTypedQueryString( lastQueryString ) );
 			recentQueries.refresh();
+			//}
 		}
 		
 		/**
@@ -827,6 +1012,64 @@ package com.ikanow.infinit.e.query.model.manager
 			sortOrderSortField.numeric = true;
 			sortOrderSortField.descending = true;
 			CollectionUtil.applySort( recentQueries, [ sortOrderSortField ] );
+		}
+		
+		protected function overrideSetupQuery():void
+		{
+			var params:Object = ExternalInterfaceUtility.getUrlParams();
+			
+			if ( params.hasOwnProperty( "communityIds" ) )
+			{
+				setup.communityIds = params[ "communityIds" ].split( "," );
+			}
+			
+			if ( params.hasOwnProperty( "query" ) )
+			{
+				var newQuery:Object = JSONUtil.decode( params[ "query" ] );
+				var tmpQueryString:QueryString = ObjectTranslatorUtil.translateObject( newQuery, new QueryString, null, false, true ) as QueryString;
+				
+				// Reset setup fields
+				
+				if ( !params.hasOwnProperty( "userSettings" ) ) // Use the existing userSettings
+				{
+					var basicQueryString:QueryStringRequest = new QueryStringRequest( scoreOptions, documentOptions, QueryUtil.getAggregationOptionsObject( aggregationOptions ), filterOptions );
+					setup.queryString = basicQueryString.getOptions();
+				}
+				
+				// Copy fields across
+				
+				setup.queryString.qt = tmpQueryString.qt;
+				setup.queryString.logic = tmpQueryString.logic;
+				
+				if ( null == setup.queryString.logic )
+				{
+					setup.queryString.logic = "";
+					
+					for ( var i:int = 1; i <= tmpQueryString.qt.length; i++ )
+					{
+						if ( 1 != i )
+						{
+							setup.queryString.logic += " AND ";
+						}
+						setup.queryString.logic += i.toString();
+					}
+				}
+				
+				if ( null != tmpQueryString.input )
+				{
+					setup.queryString.input = tmpQueryString.input;
+				}
+				
+				if ( null != tmpQueryString.output )
+				{
+					setup.queryString.output = tmpQueryString.output;
+				}
+				
+				if ( null != tmpQueryString.score )
+				{
+					setup.queryString.score = tmpQueryString.score;
+				}
+			}
 		}
 		
 		/**
@@ -846,6 +1089,7 @@ package com.ikanow.infinit.e.query.model.manager
 			
 			// set last query summary
 			lastQuerySummary = QueryUtil.getQueryStringSummary( new ArrayCollection( queryString.qt ), queryString.logic );
+			lastQuerySettingsSummary = QueryUtil.getQueryStringSettingsSummary( queryString.getOptions() );
 		}
 		
 		/**
@@ -856,6 +1100,13 @@ package com.ikanow.infinit.e.query.model.manager
 		{
 			// set the community ids
 			var communtityIds:String = CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );
+			
+			/*if ( communtityIds == "" || communtityIds == null )
+			{
+				Alert.show( "Error: No communities selected, please open the Source Manager and choose a community to search in" );
+			}
+			else
+			{*/
 			queryString.communityIds = communtityIds.split( Constants.STRING_ARRAY_DELIMITER );
 			
 			// set the query term options
@@ -897,10 +1148,11 @@ package com.ikanow.infinit.e.query.model.manager
 			lastQueryStringRequest = queryString.clone();
 			
 			// set the last query string
-			lastQueryString = ObjectTranslatorUtil.translateObject( queryString.clone(), new QueryString() ) as QueryString;
+			lastQueryString = queryString.getOptions();
 			
 			// set last query summary
 			lastQuerySummary = QueryUtil.getQueryStringSummary( lastQueryString.qt, lastQueryString.logic );
+			lastQuerySettingsSummary = QueryUtil.getQueryStringSettingsSummary( lastQueryString );
 			
 			// save the ui setup
 			var setupEvent:SetupEvent = new SetupEvent( SetupEvent.SAVE_SETUP );
@@ -914,6 +1166,7 @@ package com.ikanow.infinit.e.query.model.manager
 			// add the last query string to the recent queries collection
 			recentQueries.addItem( QueryUtil.getTypedQueryString( lastQueryString, queryStringType ) );
 			recentQueries.refresh();
+			//}
 		}
 		
 		/**

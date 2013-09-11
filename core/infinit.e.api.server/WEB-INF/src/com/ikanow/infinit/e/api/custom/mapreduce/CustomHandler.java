@@ -18,15 +18,16 @@ package com.ikanow.infinit.e.api.custom.mapreduce;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
 import org.apache.log4j.Logger;
 import org.bson.types.ObjectId;
 
-import com.google.common.collect.Lists;
 import com.ikanow.infinit.e.api.social.sharing.ShareHandler;
 import com.ikanow.infinit.e.api.utils.RESTTools;
+import com.ikanow.infinit.e.data_model.api.BasePojoApiMap;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
 import com.ikanow.infinit.e.data_model.api.custom.mapreduce.CustomMapReduceJobPojoApiMap;
@@ -39,14 +40,26 @@ import com.ikanow.infinit.e.data_model.store.custom.mapreduce.CustomMapReduceJob
 import com.ikanow.infinit.e.data_model.store.social.community.CommunityPojo;
 import com.ikanow.infinit.e.data_model.store.social.person.PersonCommunityPojo;
 import com.ikanow.infinit.e.data_model.store.social.person.PersonPojo;
+import com.ikanow.infinit.e.processing.custom.CustomProcessingController;
+import com.ikanow.infinit.e.processing.custom.scheduler.CustomScheduleManager;
+import com.ikanow.infinit.e.processing.custom.utils.HadoopUtils;
+import com.ikanow.infinit.e.processing.custom.utils.InfiniteHadoopUtils;
+import com.mongodb.BasicDBList;
 import com.mongodb.BasicDBObject;
 import com.mongodb.DBCursor;
 import com.mongodb.DBObject;
-import com.mongodb.MapReduceOutput;
 
 public class CustomHandler 
 {
 	private static final Logger logger = Logger.getLogger(CustomHandler.class);
+	
+	public CustomHandler() {
+		this(null);
+	}
+	public CustomHandler(Integer debugLimit) {
+		_debugLimit = debugLimit;
+	}
+	private Integer _debugLimit = null;
 	
 	/**
 	 * Returns the results of a map reduce job if it has completed
@@ -55,7 +68,7 @@ public class CustomHandler
 	 * @param jobid
 	 * @return
 	 */
-	public ResponsePojo getJobResults(String userid, String jobid, int limit ) 
+	public ResponsePojo getJobResults(String userid, String jobid, int limit, String fields ) 
 	{
 		ResponsePojo rp = new ResponsePojo();		
 		
@@ -63,40 +76,64 @@ public class CustomHandler
 		try
 		{
 			ObjectId jid = new ObjectId(jobid);
-			searchTerms.add(new BasicDBObject("_id",jid));
+			searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo._id_,jid));
 		}
 		catch (Exception ex)
 		{
 			//oid failed, will only add title
 		}
-		searchTerms.add(new BasicDBObject("jobtitle",jobid));
+		searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo.jobtitle_,jobid));
 				
 		try 
 		{
 			//find admin entry);
-			DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject("$or",searchTerms.toArray()));			
+			DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject(DbManager.or_,searchTerms.toArray()));			
 			if ( dbo != null )
 			{				
 				CustomMapReduceJobPojo cmr = CustomMapReduceJobPojo.fromDb(dbo, CustomMapReduceJobPojo.class);
 				//make sure user is allowed to see results
-				if ( RESTTools.adminLookup(userid) || isInCommunity(cmr.communityIds, userid) )
-				{
+				if ( RESTTools.adminLookup(userid) || isInAllCommunities(cmr.communityIds, userid) )
+				{					
 					//get results collection if done and return
-					if ( cmr.lastCompletionTime != null )
+					if ( ( cmr.lastCompletionTime != null ) || (cmr.mapper.equals("none") && cmr.exportToHdfs))
 					{
-						//return the results
-						DBCursor resultCursor = null;
-						if (limit > 0) {
-							resultCursor = DbManager.getCollection("custommr", cmr.outputCollection).find().sort(new BasicDBObject("_id",1)).limit(limit);
+						BasicDBObject queryDbo = new BasicDBObject();
+						BasicDBObject fieldsDbo = new BasicDBObject();
+						if (null != fields) {
+							fieldsDbo = (BasicDBObject) com.mongodb.util.JSON.parse("{" + fields + "}");
 						}
-						else {
-							resultCursor = DbManager.getCollection("custommr", cmr.outputCollection).find();
-						}
+
+						//return the results:
+						
+						// Need to handle sorting...
+						String sortField = "_id";
+						int sortDir = 1;
+						BasicDBObject postProcObject = (BasicDBObject) com.mongodb.util.JSON.parse(InfiniteHadoopUtils.getQueryOrProcessing(cmr.query, InfiniteHadoopUtils.QuerySpec.POSTPROC));
+						if ( postProcObject != null )
+						{
+							sortField = postProcObject.getString("sortField", "_id");
+							sortDir = postProcObject.getInt("sortDirection", 1);
+						}//TESTED (post proc and no post proc)
+						BasicDBObject sort = new BasicDBObject(sortField, sortDir);
+						
+						// Case 1: DB
 						rp.setResponse(new ResponseObject("Custom Map Reduce Job Results",true,"Map reduce job completed at: " + cmr.lastCompletionTime));
-						CustomMapReduceResultPojo cmrr = new CustomMapReduceResultPojo();
-						cmrr.lastCompletionTime = cmr.lastCompletionTime;
-						cmrr.results = resultCursor.toArray();
-						rp.setData(cmrr);																								
+						if ((null == cmr.exportToHdfs) || !cmr.exportToHdfs) {
+							DBCursor resultCursor = null;
+							if (limit > 0) {
+								resultCursor = DbManager.getCollection(cmr.getOutputDatabase(), cmr.outputCollection).find(queryDbo, fieldsDbo).sort(sort).limit(limit);
+							}
+							else {
+								resultCursor = DbManager.getCollection(cmr.getOutputDatabase(), cmr.outputCollection).find(queryDbo, fieldsDbo).sort(sort);
+							}
+							CustomMapReduceResultPojo cmrr = new CustomMapReduceResultPojo();
+							cmrr.lastCompletionTime = cmr.lastCompletionTime;
+							cmrr.results = resultCursor.toArray();
+							rp.setData(cmrr);
+						}
+						else { // Case 2: HDFS
+							rp.setData(HadoopUtils.getBsonFromSequenceFile(cmr, limit, fields), (BasePojoApiMap<BasicDBList>) null);
+						}
 					}
 					else
 					{
@@ -123,38 +160,6 @@ public class CustomHandler
 	}
 	
 	/**
-	 * Return true if a user is in community or is their own self community, false otherwise
-	 * 1. CommunityID = userid
-	 * 2. community.members contains userid
-	 * 
-	 * @param communityIds
-	 * @return
-	 */
-	private boolean isInCommunity(List<ObjectId> communityIds, String userid)
-	{
-		try
-		{			
-			BasicDBObject inQuery = new BasicDBObject("$in", communityIds.toArray());
-			BasicDBObject query = new BasicDBObject("_id",inQuery);
-			DBCursor dbc = DbManager.getSocial().getCommunity().find(query);			
-			while (dbc.hasNext())
-			{
-				DBObject dbo = dbc.next();				
-				CommunityPojo cp = CommunityPojo.fromDb(dbo, CommunityPojo.class);
-				if ( (cp.getId().toString()).equals(userid) )
-					return true; //Means this is this users personal group
-				else if ( cp.isMember(new ObjectId(userid)))
-					return true; //means this user is a member of this group
-			}
-		}
-		catch(Exception ex)
-		{
-			//error looking up communities
-		}
-		return false; //if we never find the user return false
-	}
-	
-	/**
 	 * Checks if a user is part of all communities, or an admin
 	 * 
 	 * @param communityIds
@@ -166,8 +171,8 @@ public class CustomHandler
 		//test each community for membership
 		try
 		{
-			BasicDBObject inQuery = new BasicDBObject("$in", communityIds.toArray());
-			BasicDBObject query = new BasicDBObject("_id",inQuery);
+			BasicDBObject inQuery = new BasicDBObject(DbManager.in_, communityIds.toArray());
+			BasicDBObject query = new BasicDBObject(CustomMapReduceJobPojo._id_,inQuery);
 			DBCursor dbc = DbManager.getSocial().getCommunity().find(query);
 			while (dbc.hasNext())
 			{
@@ -192,7 +197,7 @@ public class CustomHandler
 	 * @param userid
 	 * @return
 	 */
-	public ResponsePojo scheduleJob(String userid, String title, String desc, String communityIds, String jarURL, String nextRunTime, String schedFreq, String mapperClass, String reducerClass, String combinerClass, String query, String inputColl, String outputKey, String outputValue, String appendResults, String ageOutInDays, String jobsToDependOn, String json)
+	public ResponsePojo scheduleJob(String userid, String title, String desc, String communityIds, String jarURL, String nextRunTime, String schedFreq, String mapperClass, String reducerClass, String combinerClass, String query, String inputColl, String outputKey, String outputValue, String appendResults, String ageOutInDays, String jobsToDependOn, String json, Boolean exportToHdfs, boolean bQuickRun)
 	{
 		ResponsePojo rp = new ResponsePojo();
 		List<ObjectId> commids = new ArrayList<ObjectId>(); 
@@ -222,7 +227,7 @@ public class CustomHandler
 					cmr._id = new ObjectId();
 					cmr.jobtitle = title;
 					cmr.jobdesc = desc;
-					cmr.inputCollection = inputCollection;//getInputCollection(inputColl);
+					cmr.inputCollection = inputCollection;
 					if ((null == jarURL) || jarURL.equals("null")) {
 						cmr.jarURL = null;
 					}
@@ -231,27 +236,40 @@ public class CustomHandler
 					}
 					cmr.outputCollection = cmr._id.toString() + "_1";
 					cmr.outputCollectionTemp = cmr._id.toString() + "_2";
+					cmr.exportToHdfs = exportToHdfs;
+					
+					// Get the output database, based on the size of the collection
+					long nJobs = DbManager.getCustom().getLookup().count();
+					long nDbNum = nJobs / 3000; // (3000 jobs per collection, max is 6000)
+					if (nDbNum > 0) { // else defaults to custommr
+						String dbName = cmr.getOutputDatabase() + Long.toString(nDbNum);
+						cmr.setOutputDatabase(dbName);
+					}
+					
 					cmr.submitterID = new ObjectId(userid);
 					long nextRun = Long.parseLong(nextRunTime);
-					//if this job is set up to run before now, just set the next run time to now
-					//so we can schedule jobs appropriately
-					if ( nextRun < new Date().getTime() )
-						nextRun = new Date().getTime();
 					cmr.firstSchedule = new Date(nextRun);					
 					cmr.nextRunTime = nextRun;
+					//if this job is set up to run before now, just set the next run time to now
+					//so we can schedule jobs appropriately
+					long nNow = new Date().getTime();
+					if ( cmr.nextRunTime < nNow )
+						cmr.nextRunTime = nNow - 1;
+					//TESTED
+					
 					cmr.scheduleFreq = SCHEDULE_FREQUENCY.valueOf(schedFreq);
 					if ( (null != mapperClass) && !mapperClass.equals("null"))
 						cmr.mapper = mapperClass;
 					else
-						cmr.mapper = "null";
+						cmr.mapper = "";
 					if ( (null != reducerClass) && !reducerClass.equals("null"))
 						cmr.reducer = reducerClass;
 					else
-						cmr.reducer = "null";
+						cmr.reducer = "";
 					if ( (null != combinerClass) &&  !combinerClass.equals("null"))
 						cmr.combiner = combinerClass;
 					else
-						cmr.combiner = "null";
+						cmr.combiner = "";
 					if ( (null != outputKey) && !outputKey.equals("null"))
 						cmr.outputKey = outputKey;
 					else
@@ -260,7 +278,7 @@ public class CustomHandler
 						cmr.outputValue = outputValue;
 					else
 						cmr.outputValue = "com.mongodb.hadoop.io.BSONWritable";
-					if ( (null != query) && !query.equals("null"))
+					if ( (null != query) && !query.equals("null") && !query.isEmpty())
 						cmr.query = query;
 					else
 						cmr.query = "{}";
@@ -303,14 +321,23 @@ public class CustomHandler
 					DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject("jobtitle",title));
 					if ( dbo == null )
 					{
-						DbManager.getCustom().getLookup().insert(cmr.toDb());		
 						Date nextRunDate = new Date(nextRun);
 						Date now = new Date();
 						String nextRunString = nextRunDate.toString();
-						if ( nextRunDate.getTime() > now.getTime() )
-							nextRunString = " next available timeslot";
+						boolean bRunNowIfPossible = false;
+						if ( nextRunDate.getTime() < now.getTime() ) {
+							nextRunString = "next available timeslot";
+							bRunNowIfPossible = true;
+						}
 						rp.setResponse(new ResponseObject("Schedule MapReduce Job",true,"Job scheduled successfully, will run on: " + nextRunString));
 						rp.setData(cmr._id.toString(), null);
+												
+						if (bRunNowIfPossible) {
+							runJobAndWaitForCompletion(cmr, bQuickRun);
+						}//TESTED
+						else {
+							DbManager.getCustom().getLookup().save(cmr.toDb());							
+						}
 					}
 					else
 					{					
@@ -341,7 +368,7 @@ public class CustomHandler
 		return rp;
 	}
 	
-	public ResponsePojo updateJob(String userid, String jobidortitle, String title, String desc, String communityIds, String jarURL, String nextRunTime, String schedFreq, String mapperClass, String reducerClass, String combinerClass, String query, String inputColl, String outputKey, String outputValue, String appendResults, String ageOutInDays, String jobsToDependOn, String json)
+	public ResponsePojo updateJob(String userid, String jobidortitle, String title, String desc, String communityIds, String jarURL, String nextRunTime, String schedFreq, String mapperClass, String reducerClass, String combinerClass, String query, String inputColl, String outputKey, String outputValue, String appendResults, String ageOutInDays, String jobsToDependOn, String json, Boolean exportToHdfs, boolean bQuickRun)
 	{
 		ResponsePojo rp = new ResponsePojo();
 		//first make sure job exists, and user is allowed to edit
@@ -349,14 +376,14 @@ public class CustomHandler
 		try
 		{
 			ObjectId jid = new ObjectId(jobidortitle);
-			searchTerms.add(new BasicDBObject("_id",jid));
+			searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo._id_,jid));
 		}
 		catch (Exception ex)
 		{
 			//oid failed, will only add title
 		}
-		searchTerms.add(new BasicDBObject("jobtitle",jobidortitle));
-		DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject("$or",searchTerms.toArray()));
+		searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo.jobtitle_,jobidortitle));
+		DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject(DbManager.or_,searchTerms.toArray()));
 		
 		if ( dbo != null )
 		{
@@ -365,10 +392,14 @@ public class CustomHandler
 			if ( RESTTools.adminLookup(userid) || cmr.submitterID.toString().equals(userid) )
 			{
 				//check if job is already running
-				if ( cmr.jobidS != null )
+				if ( ( cmr.jobidS != null ) && !cmr.jobidS.equals( "CHECKING_COMPLETION" ) &&  !cmr.jobidS.equals( "" ) ) // (< robustness, sometimes server gets stuck here...)
 				{
 					rp.setResponse(new ResponseObject("Update MapReduce Job",false,"Job is currently running (or not yet marked as completed).  Please wait until the job completes to update it."));
 					return rp;
+				}
+				if (cmr.jobidS != null) { // (must be checking completion, ie in bug state, so reset...)
+					cmr.jobidS = null;
+					cmr.jobidN = 0;
 				}
 				//check each variable to see if its needs/can be updated
 				if ( (null != communityIds) && !communityIds.equals("null") )
@@ -435,7 +466,11 @@ public class CustomHandler
 					if ( (null != nextRunTime) && !nextRunTime.equals("null"))
 					{
 						cmr.nextRunTime = Long.parseLong(nextRunTime);
+						long nNow = new Date().getTime();
 						cmr.firstSchedule = new Date(cmr.nextRunTime);
+						if (cmr.nextRunTime < nNow) { // ie leave firstSchedule alone since that affects when we next run, but just set this to now...
+							cmr.nextRunTime = nNow - 1;
+						}//TESTED
 						cmr.timesRan = 0;
 						cmr.timesFailed = 0;
 					}
@@ -457,7 +492,10 @@ public class CustomHandler
 					}
 					if ( (null != query) && !query.equals("null"))
 					{
-						cmr.query = query;
+						if ( !query.isEmpty() )
+							cmr.query = query;
+						else
+							cmr.query = "{}";
 					}
 					if ( (null != outputKey) && !outputKey.equals("null"))
 					{
@@ -489,6 +527,9 @@ public class CustomHandler
 							cmr.appendAgeOutInDays = 0.0;
 						}
 					}
+					if (null != exportToHdfs) {
+						cmr.exportToHdfs = exportToHdfs;
+					}
 					
 					//try to work out dependencies, error out if they fail
 					if ( (null != jobsToDependOn) && !jobsToDependOn.equals("null"))
@@ -515,21 +556,37 @@ public class CustomHandler
 				} 
 				catch (IllegalArgumentException e)
 				{
+					// If an exception occurs log the error
 					logger.error("Exception Message: " + e.getMessage(), e);
-					rp.setResponse(new ResponseObject("Update MapReduce Job",false,"No enum matching scheduled frequency, try NONE, DAILY, WEEKLY, MONTHLY"));
+					rp.setResponse(new ResponseObject("Update MapReduce Job",false,"Illegal arg (enum needs to be DAILY/WEEKLY/MONTHLY/NONE?): " + e.getMessage()));
+					return rp;
 				}
 				catch (Exception e)
 				{
 					// If an exception occurs log the error
 					logger.error("Exception Message: " + e.getMessage(), e);
-					rp.setResponse(new ResponseObject("Update MapReduce Job",false,"error scheduling job"));
+					rp.setResponse(new ResponseObject("Update MapReduce Job",false,"error scheduling job: " + e.getMessage()));
+					return rp;
 				}
-							
-				//update succeeded, right back to db over existing
-				DbManager.getCustom().getLookup().save(cmr.toDb());
-				rp.setResponse(new ResponseObject("Update MapReduce Job",true,"Job updated successfully, will run on: " + new Date(cmr.nextRunTime).toString()));
+
+				// Setup post-processing 
+				
+				String nextRunString = new Date(cmr.nextRunTime).toString();
+				boolean bRunNowIfPossible = false;
+				if ( cmr.nextRunTime < new Date().getTime() ) {
+					nextRunString = "next available timeslot";
+					bRunNowIfPossible = true;
+				}
+				
+				rp.setResponse(new ResponseObject("Update MapReduce Job",true,"Job updated successfully, will run on: " + nextRunString));
 				rp.setData(cmr._id.toString(), null);
 
+				if (bRunNowIfPossible) {
+					runJobAndWaitForCompletion(cmr, bQuickRun);
+				}//TESTED
+				else {
+					DbManager.getCustom().getLookup().save(cmr.toDb());					
+				}
 			}
 			else
 			{
@@ -550,6 +607,12 @@ public class CustomHandler
 			INPUT_COLLECTIONS input = INPUT_COLLECTIONS.valueOf(inputColl);
 			if ( input == INPUT_COLLECTIONS.DOC_METADATA )
 				return "doc_metadata.metadata";
+			if ( input == INPUT_COLLECTIONS.DOC_CONTENT )
+				return "doc_content.gzip_content";
+			if ( input == INPUT_COLLECTIONS.FEATURE_ASSOCS )
+				return "feature.association";
+			if ( input == INPUT_COLLECTIONS.FEATURE_ENTITIES )
+				return "feature.entity";			
 		}
 		catch (Exception ex)
 		{
@@ -566,7 +629,7 @@ public class CustomHandler
 		try
 		{
 			ObjectId jid = new ObjectId(inputColl);
-			searchTerms.add(new BasicDBObject("_id",jid));
+			searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo._id_,jid));
 		}
 		catch (Exception e)
 		{
@@ -577,8 +640,9 @@ public class CustomHandler
 		try 
 		{
 			//find admin entry
-			BasicDBObject query = new BasicDBObject("communityIds",new BasicDBObject("$in",communityIds.toArray()));
-			query.append("$or",searchTerms.toArray());
+			BasicDBObject query = new BasicDBObject(CustomMapReduceJobPojo.communityIds_,
+														new BasicDBObject(DbManager.in_,communityIds.toArray()));
+			query.append(DbManager.or_,searchTerms.toArray());
 			DBObject dbo = DbManager.getCustom().getLookup().findOne(query);
 			if ( dbo != null )
 			{
@@ -605,14 +669,16 @@ public class CustomHandler
 		ResponsePojo rp = new ResponsePojo();		
 		try 
 		{
-			DBObject dbo = DbManager.getSocial().getPerson().findOne(new BasicDBObject("_id",new ObjectId(userid)));
+			DBObject dbo = DbManager.getSocial().getPerson().findOne(new BasicDBObject(CustomMapReduceJobPojo._id_,
+																		new ObjectId(userid)));
 			if (dbo != null )
 			{
 				PersonPojo pp = PersonPojo.fromDb(dbo, PersonPojo.class);
-				List<ObjectId> communities = new ArrayList<ObjectId>();
+				HashSet<ObjectId> communities = new HashSet<ObjectId>();
 				for ( PersonCommunityPojo pcp : pp.getCommunities())
 					communities.add(pcp.get_id());
-				BasicDBObject commquery = new BasicDBObject("communityIds", new BasicDBObject(MongoDbManager.in_,communities.toArray()));
+				BasicDBObject commquery = new BasicDBObject(
+						CustomMapReduceJobPojo.communityIds_, new BasicDBObject(MongoDbManager.in_,communities));
 				if (null != jobIdOrTitle) {
 					try {
 						if (jobIdOrTitle.contains(",")) {
@@ -621,20 +687,20 @@ public class CustomHandler
 							for (int i = 0; i < jobidstrs.length; ++i) {
 								jobids[i] = new ObjectId(jobidstrs[i]);
 							}
-							commquery.put("_id", new BasicDBObject(MongoDbManager.in_, jobids));
+							commquery.put(CustomMapReduceJobPojo._id_, new BasicDBObject(MongoDbManager.in_, jobids));
 						}
 						else {
 							ObjectId jobid = new ObjectId(jobIdOrTitle);
-							commquery.put("_id", jobid);
+							commquery.put(CustomMapReduceJobPojo._id_, jobid);
 						}
 					}
 					catch (Exception e) { // Must be a jobtitle
 						if (jobIdOrTitle.contains(",")) {
 							String[] jobtitles = jobIdOrTitle.split("\\s*,\\s*");
-							commquery.put("jobtitle", new BasicDBObject(MongoDbManager.in_, jobtitles));
+							commquery.put(CustomMapReduceJobPojo.jobtitle_, new BasicDBObject(MongoDbManager.in_, jobtitles));
 						}
 						else {
-							commquery.put("jobtitle", jobIdOrTitle);
+							commquery.put(CustomMapReduceJobPojo.jobtitle_, jobIdOrTitle);
 						}
 					}
 				}
@@ -644,7 +710,17 @@ public class CustomHandler
 				}
 				else {
 					rp.setResponse(new ResponseObject("Custom Map Reduce Get Jobs",true,"succesfully returned jobs"));
-					rp.setData(CustomMapReduceJobPojo.listFromDb(dbc, CustomMapReduceJobPojo.listType()), new CustomMapReduceJobPojoApiMap(new HashSet<ObjectId>(communities)));
+					List<CustomMapReduceJobPojo> jobs = CustomMapReduceJobPojo.listFromDb(dbc, CustomMapReduceJobPojo.listType());
+					// Extra bit of code, need to eliminate partial community matches, eg if job belongs to A,B and we only belong to A
+					// then obviously we can't see the job since it contains data from B
+					Iterator<CustomMapReduceJobPojo> jobsIt = jobs.iterator();
+					while (jobsIt.hasNext()) {
+						CustomMapReduceJobPojo job = jobsIt.next();
+						if (!communities.containsAll(job.communityIds)) {
+							jobsIt.remove();
+						}
+					}//TOTEST
+					rp.setData(jobs, new CustomMapReduceJobPojoApiMap(communities));
 				}
 			}
 			else
@@ -659,101 +735,6 @@ public class CustomHandler
 			rp.setResponse(new ResponseObject("Custom Map Reduce Get Jobs",false,"error retrieving jobs"));
 		}
 		return rp;
-	}
-
-	public ResponsePojo runMapReduce(String userid, String collection, String map, String reduce, String query)
-	{
-		ResponsePojo rp = new ResponsePojo();
-		try
-		{
-			//get user communities
-			DBObject dboperson = DbManager.getSocial().getPerson().findOne(new BasicDBObject("_id", new ObjectId(userid)));
-			if ( dboperson != null )
-			{
-				PersonPojo pp = PersonPojo.fromDb(dboperson, PersonPojo.class);
-				List<ObjectId> communityIds = new ArrayList<ObjectId>();
-				for ( PersonCommunityPojo pcp : pp.getCommunities() )
-					communityIds.add( pcp.get_id() );
-				
-				DBObject dbQuery = (DBObject) com.mongodb.util.JSON.parse(query);
-				
-				boolean customCol = false;
-				String inputCol = getStandardInputCollection(collection);
-				if ( inputCol == null ) //was not a	standard collection, try custom
-					inputCol = getCustomInputCollection(collection,communityIds);
-				else //was a standard, add community ids to query
-				{
-					dbQuery.put("communityId", new BasicDBObject("$in",communityIds.toArray()));
-					customCol = true;
-				}
-				
-				if (inputCol != null )
-				{
-					if ( customCol )
-					{
-						//get the custom collection name
-						String coll = getCustomCollection(inputCol);
-						if ( coll != null )
-						{
-							//handle using a custom table
-							MapReduceOutput mro = DbManager.getCollection("custommr", coll).mapReduce(map, reduce, "{out: { inline : 1}}", dbQuery);
-							Iterable<DBObject> results = mro.results();
-							List<DBObject> resultList = Lists.newArrayList(results);
-							rp.setResponse(new ResponseObject("Custom Map Reduce Run",true,"Map Reduce ran successfully"));
-							rp.setData(resultList.toString(),null);
-						}
-						else
-						{
-							rp.setResponse(new ResponseObject("Custom Map Reduce Run",false,"Error getting custom input collection"));
-						}
-					}
-					else
-					{
-						//handle using a normal table
-						String[] collString = inputCol.split("\\.");		
-						String db = collString[0];
-						String coll = collString[1];
-						MapReduceOutput mro = DbManager.getCollection(db, coll).mapReduce(map, reduce, "{out: { inline : 1}}", dbQuery);
-						Iterable<DBObject> results = mro.results();
-						List<DBObject> resultList = Lists.newArrayList(results);
-						rp.setResponse(new ResponseObject("Custom Map Reduce Run",true,"Map Reduce ran successfully"));
-						rp.setData(resultList.toString(),null);
-					}
-				}
-				else
-				{
-					rp.setResponse(new ResponseObject("Custom Map Reduce Run",false,"you dont have access to the input collection"));
-				}
-			}
-			else
-			{
-				rp.setResponse(new ResponseObject("Custom Map Reduce Run",false,"user did not exist"));
-			}						
-		}
-		catch (Exception ex)
-		{
-			rp.setResponse(new ResponseObject("Custom Map Reduce Run",false,"error running map reduce"));
-		}
-		return rp;
-	}
-	
-	/**
-	 * Returns the current output collection for a certain jobid
-	 * This is usually used when a custom input collection is set for a job because
-	 * the output collection of another job can change regularly.
-	 * 
-	 * @param jobid
-	 * @return
-	 */
-	private String getCustomCollection(String jobid)
-	{
-		DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject("_id", new ObjectId(jobid)));
-		if ( dbo != null )
-		{
-			CustomMapReduceJobPojo cmr = CustomMapReduceJobPojo.fromDb(dbo, CustomMapReduceJobPojo.class);
-			return cmr.outputCollection;
-		}
-		return null;
 	}
 
 	/**
@@ -772,18 +753,18 @@ public class CustomHandler
 		try
 		{
 			ObjectId jid = new ObjectId(jobidortitle);
-			searchTerms.add(new BasicDBObject("_id",jid));
+			searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo._id_,jid));
 		}
 		catch (Exception ex)
 		{
 			//oid failed, will only add title
 		}
-		searchTerms.add(new BasicDBObject("jobtitle",jobidortitle));
+		searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo.jobtitle_,jobidortitle));
 				
 		try 
 		{
 			//find admin entry);
-			DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject("$or",searchTerms.toArray()));			
+			DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject(DbManager.or_,searchTerms.toArray()));			
 			if ( dbo != null )
 			{				
 				CustomMapReduceJobPojo cmr = CustomMapReduceJobPojo.fromDb(dbo, CustomMapReduceJobPojo.class);
@@ -791,12 +772,18 @@ public class CustomHandler
 				if ( RESTTools.adminLookup(userid) || cmr.submitterID.toString().equals(userid) )
 				{
 					//make sure job is not running
-					if ( cmr.jobidS == null )
+					if ( ( cmr.jobidS == null ) || cmr.jobidS.equals( "CHECKING_COMPLETION" ) || cmr.jobidS.equals( "" ) ) // (< robustness, sometimes server gets stuck here...)
 					{
 						//remove results and job
-						DbManager.getCustom().getLookup().remove(new BasicDBObject("_id", cmr._id));
-						DbManager.getCollection("custommr", cmr.outputCollection).drop();
-						DbManager.getCollection("custommr", cmr.outputCollectionTemp).drop();
+						DbManager.getCustom().getLookup().remove(new BasicDBObject(CustomMapReduceJobPojo._id_, cmr._id));
+						DbManager.getCollection(cmr.getOutputDatabase(), cmr.outputCollection).drop();
+						DbManager.getCollection(cmr.getOutputDatabase(), cmr.outputCollectionTemp).drop();
+
+						// Delete HDFS directory, if one is used
+						if ((null != cmr.exportToHdfs) && cmr.exportToHdfs) {
+							HadoopUtils.deleteHadoopDir(cmr);
+						}
+						
 						//remove jar file if unused elsewhere?
 						if ( removeJar )
 						{
@@ -839,6 +826,11 @@ public class CustomHandler
 		return rp;
 	}
 	
+	//////////////////////////////////////////////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////
+	
+	// UTILITIES
+	
 	/**
 	 * Checks if any other custom jobs use the same jar and attempts to remove using the share handler.
 	 * 
@@ -852,7 +844,7 @@ public class CustomHandler
 		if ( url.startsWith("$infinite") )
 		{
 			//check if the jar is used for any other jobs, remove it if not
-			if ( DbManager.getCustom().getLookup().find(new BasicDBObject("jarURL", url)).count() == 0 )
+			if ( DbManager.getCustom().getLookup().find(new BasicDBObject(CustomMapReduceJobPojo.jarURL_, url)).count() == 0 )
 			{
 				//grab the id
 				String jarid = url.substring( url.lastIndexOf("/") + 1 );
@@ -887,14 +879,14 @@ public class CustomHandler
 			try
 			{
 				ObjectId jid = new ObjectId(dependency);
-				searchTerms.add(new BasicDBObject("_id",jid));
+				searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo._id_,jid));
 			}
 			catch (Exception ex)
 			{
 				//oid failed, will only add title
 			}
-			searchTerms.add(new BasicDBObject("jobtitle",dependency));
-			DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject("$or",searchTerms.toArray()));			
+			searchTerms.add(new BasicDBObject(CustomMapReduceJobPojo.jobtitle_,dependency));
+			DBObject dbo = DbManager.getCustom().getLookup().findOne(new BasicDBObject(DbManager.or_,searchTerms.toArray()));			
 			if ( dbo != null )
 			{	
 				//job existed, add its id
@@ -909,7 +901,57 @@ public class CustomHandler
 		}		
 		return dependencies;
 	}
+
+	// UTILITY FUNCTION FOR SCHEDULE/UPDATE JOB
 	
+	private void runJobAndWaitForCompletion(CustomMapReduceJobPojo job, boolean bQuickRun) {
+		com.ikanow.infinit.e.processing.custom.utils.PropertiesManager customProps = new com.ikanow.infinit.e.processing.custom.utils.PropertiesManager();
+		boolean bLocalMode = customProps.getHadoopLocalMode();
+		if (!bLocalMode || bQuickRun || (null != _debugLimit)) {			
+			// (if local mode is running then initializing job is bad because it will wait until the job is complete
+			//  ... except if quickRun is set then this is what we want anyway!)
+			
+			// Check there are available timeslots:
+			if (CustomScheduleManager.availableSlots(customProps)) {
+				job.lastRunTime = new Date();
+				job.jobidS = "";
+				DbManager.getCustom().getLookup().save(job.toDb());							
+				
+				// Run the job
+				CustomProcessingController pxController = null;
+				if (null != _debugLimit) {
+					pxController = new CustomProcessingController(true, _debugLimit);					
+				}
+				else {
+					pxController = new CustomProcessingController();
+				}
+				pxController.initializeJob(job); // (sets job.jobid*)
+				
+				// In quick run mode, keep checking until the job is done (5s intervals)
+				if (bQuickRun) {
+					int nRuns = 0;
+					while (!pxController.checkRunningJobs(job)) {
+						try { Thread.sleep(5000); } catch (Exception e) {}
+						if (++nRuns > 120) { // bail out after 10 minutes 
+							break;
+						}
+					}
+				}
+			}
+			else { // (no available timeslots - just save as is and let the px engine start it)
+				DbManager.getCustom().getLookup().save(job.toDb());											
+			}
+		}		
+		else { // still need to save the job
+			DbManager.getCustom().getLookup().save(job.toDb());														
+		}
+		
+	}//TESTED: (local mode on/off, quick mode on/off) //TESTED (local/quick, local/!quick)
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////
+
+	// REMOVED THIS BECAUSE THE DATABASES ARE ALL SHARDED
 	/*
 	public ResponsePojo runAggregation(String userid, String key, String cond, String initial, String reduce, String collection) 
 	{

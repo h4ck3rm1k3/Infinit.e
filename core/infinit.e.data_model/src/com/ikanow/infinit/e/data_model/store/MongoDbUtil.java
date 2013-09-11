@@ -15,10 +15,15 @@
  ******************************************************************************/
 package com.ikanow.infinit.e.data_model.store;
 
+import java.text.ParseException;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
+import org.bson.BSONObject;
+import org.bson.BasicBSONObject;
+import org.bson.types.BasicBSONList;
 import org.bson.types.ObjectId;
 
 import com.google.gson.JsonArray;
@@ -27,11 +32,27 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.ikanow.infinit.e.data_model.utils.ThreadSafeSimpleDateFormat;
 import com.mongodb.BasicDBList;
+import com.mongodb.BasicDBObject;
 import com.mongodb.DBCursor;
 import com.mongodb.DBObject;
+import com.mongodb.hadoop.io.BSONWritable;
 
 public class MongoDbUtil {
 
+	@SuppressWarnings("unchecked")
+	public static <T> T getProperty(DBObject dbo, String fieldInDotNotation) {
+	    final String[] keys = fieldInDotNotation.split( "\\." );
+	    DBObject current = dbo;
+	    Object result = null;
+	    for ( int i = 0; i < keys.length; i++ ) {
+	        result = current.get( keys[i] );
+	        if ( i + 1 < keys.length ) {
+	            current = (DBObject) result;
+	        }
+	    }
+	    return (T) result;		
+	}//TESTED
+	
     public static JsonElement encode(DBCursor cursor) {
         JsonArray result = new JsonArray();
     	while (cursor.hasNext()) {
@@ -39,23 +60,31 @@ public class MongoDbUtil {
     		result.add(encode(dbo));
     	}
     	return result;
-    }
+    }//TESTED
     public static JsonElement encode(List<DBObject> listOfObjects) {
         JsonArray result = new JsonArray();
     	for (DBObject dbo: listOfObjects) {    		
     		result.add(encode(dbo));
     	}
     	return result;
-    }
-    public static JsonElement encode(BasicDBList a) {
+    }//TESTED
+    public static JsonElement encode(BasicBSONList a) {
         JsonArray result = new JsonArray();
         for (int i = 0; i < a.size(); ++i) {
             Object o = a.get(i);
             if (o instanceof DBObject) {
                 result.add(encode((DBObject)o));
-            } else if (o instanceof BasicDBList) {
+            } 
+            else if (o instanceof BasicBSONObject) {
+                result.add(encode((BasicBSONObject)o));
+            } 
+            else if (o instanceof BasicBSONList) {
+                result.add(encode((BasicBSONList)o));
+            } 
+            else if (o instanceof BasicDBList) {
                 result.add(encode((BasicDBList)o));
-            } else { // Must be a primitive... 
+            } 
+            else { // Must be a primitive... 
             	if (o instanceof String) {
             		result.add(new JsonPrimitive((String)o));
             	}
@@ -80,19 +109,27 @@ public class MongoDbUtil {
             }
         }
         return result;
-    }
-
-    public static JsonElement encode(DBObject o) {
+    }//TESTED
+    
+    public static JsonElement encode(BSONObject o) {
         JsonObject result = new JsonObject();
         Iterator<?> i = o.keySet().iterator();
         while (i.hasNext()) {
             String k = (String)i.next();
             Object v = o.get(k);
-            if (v instanceof BasicDBList) {
+            if (v instanceof BasicBSONList) {
+                result.add(k, encode((BasicBSONList)v));
+            } 
+            else if (v instanceof BasicDBList) {
                 result.add(k, encode((BasicDBList)v));
-            } else if (v instanceof DBObject) {
+            } 
+            else if (v instanceof DBObject) {
                 result.add(k, encode((DBObject)v));
-            } else { // Must be a primitive... 
+            } 
+            else if (v instanceof BasicBSONObject) {
+                result.add(k, encode((BasicBSONObject)v));
+            } 
+            else { // Must be a primitive... 
             	if (v instanceof String) {            		
             		result.add(k, new JsonPrimitive((String)v));
             	}
@@ -111,12 +148,80 @@ public class MongoDbUtil {
             	else if (v instanceof Date) {
             		JsonObject date = new JsonObject();
             		date.add("$date", new JsonPrimitive(_format.format((Date)v)));
-            		result.add(k, date);            		
+            		result.add(k, date); 
             	}
             	// Ignore BinaryData, should be serializing that anyway...            	
             }
         }
         return result;
-    }
+    }//TESTED
     private static ThreadSafeSimpleDateFormat _format = new ThreadSafeSimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+
+    public static Object encodeUnknown(JsonElement from) {
+		if (from.isJsonArray()) { // Array
+			return encodeArray(from.getAsJsonArray());
+		}//TESTED
+		else if (from.isJsonObject()) { // Object
+			JsonObject obj = from.getAsJsonObject();
+			// Check for OID/Date:
+			if (1 == obj.entrySet().size()) {
+				if (obj.has("$date")) {
+					try {
+						return _format.parse(obj.get("$date").getAsString());
+					} catch (ParseException e) {
+						return null;
+					}
+				}//TESTED
+				else if (obj.has("$oid")) {
+					return new ObjectId(obj.get("$oid").getAsString());
+				}//TESTED    				
+			}
+			return encode(obj);
+		}//TESTED
+		else if (from.isJsonPrimitive()) { // Primitive
+			JsonPrimitive val = from.getAsJsonPrimitive();
+			if (val.isNumber()) {
+				return val.getAsNumber();
+			}//TESTED
+			else if (val.isBoolean()) {
+				return val.getAsBoolean();
+			}//TESTED
+			else if (val.isString()) {
+				return val.getAsString();
+			}//TESTED
+		}//TESTED
+    	return null;
+    }//TESTED
+    public static BasicDBList encodeArray(JsonArray a) {
+    	BasicDBList dbl = new BasicDBList();
+    	for (JsonElement el: a) {
+    		dbl.add(encodeUnknown(el));
+    	}
+    	return dbl;    	
+    }//TESTED
+    public static BasicDBObject encode(JsonObject o) {
+    	BasicDBObject dbo = new BasicDBObject();
+    	for (Map.Entry<String, JsonElement> elKV: o.entrySet()) {
+    		dbo.append(elKV.getKey(), encodeUnknown(elKV.getValue()));
+    	}    	
+    	return dbo;
+    }//TESTED
+	public static DBObject convert(BSONWritable dbo) {
+		DBObject out = new BasicDBObject();
+		for (Object entryIt: dbo.toMap().entrySet()) {
+			@SuppressWarnings("unchecked")			
+			Map.Entry<String, Object> entry = (Map.Entry<String, Object>)entryIt;
+			out.put(entry.getKey(), entry.getValue());
+		}
+		return out;
+	}//TESTED
+	public static BSONWritable convert(BSONObject dbo) {
+		BSONWritable out = new BSONWritable();
+		for (Object entryIt: dbo.toMap().entrySet()) {
+			@SuppressWarnings("unchecked")
+			Map.Entry<String, Object> entry = (Map.Entry<String, Object>)entryIt;
+			out.put(entry.getKey(), entry.getValue());
+		}
+		return out;
+	}//TESTED
 }

@@ -33,6 +33,8 @@ import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
 import com.ikanow.infinit.e.harvest.HarvestController;
 import com.ikanow.infinit.e.processing.generic.GenericProcessingController;
 import com.ikanow.infinit.e.processing.generic.aggregation.AggregationManager;
+import com.ikanow.infinit.e.processing.generic.aggregation.EntityBackgroundAggregationManager;
+import com.ikanow.infinit.e.processing.generic.aggregation.AssociationBackgroundAggregationManager;
 import com.ikanow.infinit.e.processing.generic.store_and_index.StoreAndIndexManager;
 
 public class HarvestThenProcessController {
@@ -58,6 +60,10 @@ public class HarvestThenProcessController {
                 
 		// Intialize/update generic process controller (do this here so that it blocks before threading fun starts) 
 		new GenericProcessingController().Initialize();
+		
+		//Start the background aggregation thread (will do nothing if disabled)
+		EntityBackgroundAggregationManager.startThread();
+		AssociationBackgroundAggregationManager.startThread();
 		
 		_mainThread = Thread.currentThread();
 		
@@ -146,6 +152,10 @@ public class HarvestThenProcessController {
 			}
 		}//TESTED (cut and paste from tested Beta code)
         
+		// Stop background aggregation
+		EntityBackgroundAggregationManager.stopThreadAndWait();
+		AssociationBackgroundAggregationManager.stopThreadAndWait();
+		
 		_logger.info("Harvest server is going offline");
 		_bStopHarvest = true;
 		_bReadyToTerminate = true; // (if we were terminated manually tell the shutdown hook it can stop)
@@ -298,12 +308,13 @@ public class HarvestThenProcessController {
 					// (toAdd includes toUpdate)
 				
 				if (HarvestEnum.error != _sourceToProcess.getHarvestStatus().getHarvest_status()) {
-					_genericController.get().processDocuments(SourceUtils.getHarvestType(_sourceToProcess), toAdd, toUpdate, toRemove);
+					_genericController.get().processDocuments(SourceUtils.getHarvestType(_sourceToProcess), toAdd, toUpdate, toRemove, _sourceToProcess);
 						// (toRemove includes toUpdate)
 					
 					SourceUtils.updateHarvestStatus(_sourceToProcess, HarvestEnum.success, toAdd, toRemove.size());
 						// (note also releases the "in_progress" lock)
 						// (note also prunes sources based on "maxDocs")
+						// (also handles the intra-source distribution logic)
 				}
 				// (if we've declared error, then "in_progress" lock already released so nothing to do)
 			}

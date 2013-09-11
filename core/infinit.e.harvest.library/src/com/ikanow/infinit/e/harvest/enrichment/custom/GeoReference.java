@@ -86,6 +86,8 @@ public class GeoReference
 			if (exactMatchOnly)
 			{
 				query = getQuery(hasGeoindex, 1);
+				//DEBUG
+				//System.out.println(query);
 				result = getGeoReference(geoDb, query, nMaxReturns);
 			}
 			// Loose match, broaden/modify search on each of up to 4 attempts
@@ -94,8 +96,10 @@ public class GeoReference
 				for (int i = 1; i <= 4; i++)
 				{
 					query = getQuery(hasGeoindex, i);
-					result = getGeoReference(geoDb, query, nMaxReturns);
-					if (result.count() > 0) { break; }
+					if (null != query) {
+						result = getGeoReference(geoDb, query, nMaxReturns);
+						if (result.count() > 0) { break; }
+					}
 				}
 			}
 			
@@ -126,6 +130,9 @@ public class GeoReference
 	 * @param attempt
 	 * @return
 	 */
+	//TODO (INF-1864): running this in non-strict mode can cripple the DB since search field might not
+	//be set ... at least need to cache such queries (almost always the US every time!)....
+	
 	private static BasicDBObject getQuery(Boolean hasGeoindex, int attempt)
 	{
 		BasicDBObject query = new BasicDBObject();
@@ -163,6 +170,10 @@ public class GeoReference
 				if (city != null) query.put("city", city);
 				if (region != null) query.put("region", region);
 				if (country != null) query.put("country", country);
+				if (null == searchField) { // only country code specified...
+					query.put("city", new BasicDBObject(DbManager.exists_, false));
+					query.put("region", new BasicDBObject(DbManager.exists_, false));
+				}
 				if (countryCode != null) query.put("country_code", countryCode);
 				break;
 
@@ -203,12 +214,15 @@ public class GeoReference
 				break;
 			}
 		}
+		if (query.isEmpty()) {
+			return null;
+		}
 
 		// Only return records with GeoIndex objects
 		if (hasGeoindex)
 		{
 			BasicDBObject ne = new BasicDBObject();
-			ne.append("$ne", null);
+			ne.append(DbManager.exists_, true);
 			query.put("geoindex", ne);
 		}
 

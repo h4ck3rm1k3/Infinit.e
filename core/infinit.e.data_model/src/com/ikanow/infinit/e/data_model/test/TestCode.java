@@ -18,8 +18,11 @@ package com.ikanow.infinit.e.data_model.test;
 import java.io.IOException;
 import java.net.UnknownHostException;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.bson.types.ObjectId;
@@ -40,16 +43,19 @@ import com.ikanow.infinit.e.data_model.api.ApiManager;
 import com.ikanow.infinit.e.data_model.api.BaseApiPojo;
 import com.ikanow.infinit.e.data_model.api.BasePojoApiMap;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
+import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
 import com.ikanow.infinit.e.data_model.api.config.SourcePojoApiMap;
 import com.ikanow.infinit.e.data_model.api.knowledge.AdvancedQueryPojo;
 import com.ikanow.infinit.e.data_model.api.knowledge.DocumentPojoApiMap;
 import com.ikanow.infinit.e.data_model.api.social.sharing.SharePojoApiMap;
+import com.ikanow.infinit.e.data_model.driver.InfiniteDriver;
 import com.ikanow.infinit.e.data_model.index.ElasticSearchManager;
 import com.ikanow.infinit.e.data_model.index.IndexManager;
 import com.ikanow.infinit.e.data_model.index.document.DocumentPojoIndexMap;
 import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
 import com.ikanow.infinit.e.data_model.store.document.EntityPojo;
+import com.ikanow.infinit.e.data_model.store.feature.entity.EntityFeaturePojo;
 import com.mongodb.BasicDBList;
 import com.mongodb.BasicDBObject;
 import com.mongodb.DBCollection;
@@ -71,6 +77,128 @@ public class TestCode {
 		
 /////////////////////////////////////////////////////////////////////////////
 		
+// SOME DRIVER TESTING
+		
+		// Aliases:		
+		
+		boolean bTestAliases = true;
+		if (bTestAliases) { // will need to set some variables...
+		
+			String rootUrl = "http://infinite.ROOT.com/api/";
+			String apiKey = "API_KEY";
+			
+			InfiniteDriver infDriver = new InfiniteDriver(rootUrl, apiKey);
+			
+			String aliasCommIdStr = "4d38b72c054548f038a0414a";
+			String emptyAliasCommIdStr = "506afc85e4b01d98fcf9bf5f";
+			ResponseObject response = new ResponseObject(); 
+			Map<String, List<SharePojo>> aliasMapping = new HashMap<String, List<SharePojo>>();
+			Map<String, EntityFeaturePojo> aliases = infDriver.getAliases(aliasCommIdStr, aliasMapping, response);
+			
+			if (response.isSuccess()) {
+				System.out.println("ALIASES: " + new com.google.gson.Gson().toJson(aliases));
+				System.out.println("ALIAS MAPPINGS: " + new com.google.gson.Gson().toJson(aliasMapping));
+			}
+			else {
+				System.out.println("FAIL: " + response.getMessage());
+			}
+			// Change 1 of the aliases
+			Iterator<EntityFeaturePojo> it = aliases.values().iterator();
+			EntityFeaturePojo alias = it.next();
+			alias.addToSemanticLinks(Arrays.asList("AlexTest"));
+			EntityFeaturePojo alias2 = it.next();
+			alias2.addAlias("XXXXX/person");
+			Set<String> failures = infDriver.updateAliases(Arrays.asList(alias, alias2), aliasCommIdStr, false, response);
+			if (!response.isSuccess()) {
+				System.out.println("UPDATE TOTAL FAILURE: " + response.getMessage());
+			}
+			else if (!failures.isEmpty()) {
+				System.out.println("UPDATE FAILURES: " + Arrays.toString(failures.toArray()));
+			}
+			else {
+				System.out.println("UPDATED " + alias.getIndex() + " AND " + alias2.getIndex());
+			}
+			// Check upserting (failure and success) into an existing share
+			// upsert fail:
+			String savedAlias = alias.getIndex();
+			alias.setIndex("testXXX/person");
+			if (aliases.containsKey("testXXX/person")) {
+				System.out.println("(skipping upsert fail, target index exists)");
+			}
+			else {
+				failures = infDriver.updateAliases(Arrays.asList(alias, alias2), aliasCommIdStr, false, response);
+				if (!response.isSuccess()) {
+					System.out.println("UPDATE TOTAL FAILURE (CORRECT IF ONLY 1 ALIAS SPECIFIED): " + response.getMessage() + " " + Arrays.toString(failures.toArray()));
+				}
+				else if (!failures.isEmpty()) {
+					System.out.println("UPSERT CORRECTLY FAILS: " + Arrays.toString(failures.toArray()));
+				}
+				else {
+					System.out.println("INCORRECTLY UPDATED " + alias.getIndex());
+				}
+			}
+			// upsert success:
+			failures = infDriver.updateAliases(Arrays.asList(alias), aliasCommIdStr, true, response);
+			if (!response.isSuccess()) {
+				System.out.println("UPDATE TOTAL FAILURE: " + response.getMessage());
+			}
+			else if (!failures.isEmpty()) {
+				System.out.println("UPDATE FAILURES: " + Arrays.toString(failures.toArray()));
+			}
+			else {
+				System.out.println("UPDATED " + alias.getIndex());
+			}
+			// Check upserting into a new community			
+			failures = infDriver.updateAliases(Arrays.asList(alias), emptyAliasCommIdStr, true, response);
+			if (!response.isSuccess()) {
+				System.out.println("UPDATE TOTAL FAILURE: " + response.getMessage());
+			}
+			else if (!failures.isEmpty()) {
+				System.out.println("UPDATE FAILURES: " + Arrays.toString(failures.toArray()));
+			}
+			else {
+				System.out.println("UPDATED " + alias.getIndex());
+			}
+			// Check removal
+			boolean bRemoval = true;
+			if (bRemoval) {
+				failures = infDriver.removeAliases(Arrays.asList(alias.getIndex()), emptyAliasCommIdStr, response);
+				if (!response.isSuccess()) {
+					System.out.println("REMOVE TOTAL FAILURE: " + response.getMessage());
+				}
+				else if (!failures.isEmpty()) {
+					System.out.println("REMOVE FAILURES: " + Arrays.toString(failures.toArray()));
+				}
+				else {
+					System.out.println("REMOVE " + alias.getIndex());
+				}
+				failures = infDriver.removeAliases(Arrays.asList(alias.getIndex()), aliasCommIdStr, response);
+				if (!response.isSuccess()) {
+					System.out.println("REMOVE TOTAL FAILURE: " + response.getMessage());
+				}
+				else if (!failures.isEmpty()) {
+					System.out.println("REMOVE FAILURES: " + Arrays.toString(failures.toArray()));
+				}
+				else {
+					System.out.println("REMOVE " + alias.getIndex());
+				}
+				// Reset old shares back again
+				alias.setIndex(savedAlias);
+				if (null != alias.getSemanticLinks()) {
+					alias.getSemanticLinks().remove("AlexTest");
+				}
+				alias.getAlias().remove("XXXXX/person");
+				if (null != alias2.getSemanticLinks()) {
+					alias2.getSemanticLinks().remove("AlexTest");
+				}
+				alias2.getAlias().remove("XXXXX/person");
+				failures = infDriver.updateAliases(Arrays.asList(alias, alias2), aliasCommIdStr, false, response);
+				System.out.println("RESET: " + response.isSuccess() + " " + (2 - failures.size()));
+			}
+		}//(end alias testing)
+		
+/////////////////////////////////////////////////////////////////////////////
+		
 // API testing:
 		
 		// API: Variable community source pojo...
@@ -87,7 +215,7 @@ public class TestCode {
 		//CANONICAL EXAMPLE:
 		Set<ObjectId> communities = new HashSet<ObjectId>();
 		communities.add(new ObjectId("a0000000000000000000000a"));
-		rp1.setData(sp, new SourcePojoApiMap(null, null, communities));
+		rp1.setData(sp, new SourcePojoApiMap(null, communities, communities));
 		String sRPSingleObject = rp1.toApi();
 		System.out.println("RPa=" + sRPSingleObject); // ("chris" removed, toApi handles RepsonsePojo specially)
 		////////////////////////////////////////////////
@@ -95,10 +223,10 @@ public class TestCode {
 		System.out.println("RPc=" + ResponsePojo.toApi(rp1)); // ("chris" removed, toApi handles RepsonsePojo specially)
 		
 		//API: Get an non-API object
-		String sJson = "{ 'url':'http://test2', 'isApproved': false, 'harvestBadSource': true } ";
+		String sJson = "{ 'url':'http://test2', 'isApproved': false, 'harvestBadSource': true, 'created': 'Feb 14, 2013 9:24:34 PM' } ";
 		//sp = BaseApiPojo.mapFromApi(sJson, SourcePojo.class, null);
 		// Equivalent to:
-		SourcePojo sp2 = ApiManager.mapFromApi(sJson, SourcePojo.class, new SourcePojoApiMap(null, null, new HashSet<ObjectId>()));
+		SourcePojo sp2 = ApiManager.mapFromApi(sJson, SourcePojo.class, new SourcePojoApiMap(null, new HashSet<ObjectId>(), new HashSet<ObjectId>()));
 		System.out.println("RPd="+new Gson().toJson(sp2)); // "alex" and "chris" both removed
 		
 		//API: add a list to the response Pojo
@@ -107,7 +235,7 @@ public class TestCode {
 		//rp1.setData(list); // (Not allowed SourcePojo isn't a BaseApiPojo)
 
 		sp2.addToCommunityIds(new ObjectId("a0000000000000000000000a")); // (alex will be allowed again)
-		rp1.setData(list, new SourcePojoApiMap(null, null, communities));
+		rp1.setData(list, new SourcePojoApiMap(null, communities, communities));
 		String sRPList = rp1.toApi(); 
 		sp2.setCommunityIds(null);
 		
@@ -137,20 +265,20 @@ public class TestCode {
 				}
 			}			
 			// Try again:
-			System.out.println("SPJ=" + ApiManager.mapListToApi(set, new TypeToken<Set<SourcePojo>>(){}, new SourcePojoApiMap(null, null, communities)));
+			System.out.println("SPJ=" + ApiManager.mapListToApi(set, new TypeToken<Set<SourcePojo>>(){}, new SourcePojoApiMap(null, communities, communities)));
 				// (just has "alex")			
 		}
 		
 		// And now in the other direction, ie deserializing....
-		ResponsePojo rpRecreated = ResponsePojo.fromApi(sRPSingleObject, ResponsePojo.class, SourcePojo.class, new SourcePojoApiMap(null, null, communities));
+		ResponsePojo rpRecreated = ResponsePojo.fromApi(sRPSingleObject, ResponsePojo.class, SourcePojo.class, new SourcePojoApiMap(null, communities, communities));
 		System.out.println("RECREATED RP_SRC=" + rpRecreated.toApi());
 		System.out.println("RECREATED SRC(RP_SRC)=" + ((BasicDBObject)((SourcePojo)rpRecreated.getData()).toDb()).toString());
-		rpRecreated = ResponsePojo.listFromApi(sRPList, ResponsePojo.class, SourcePojo.listType(), new SourcePojoApiMap(null, null, communities));
+		rpRecreated = ResponsePojo.listFromApi(sRPList, ResponsePojo.class, SourcePojo.listType(), new SourcePojoApiMap(null, communities, communities));
 		System.out.println("RECREATED RP_LSRC=" + rpRecreated.toApi());
 		
 		rpRecreated = ResponsePojo.fromApi(sRPSingleObject, ResponsePojo.class);
 		System.out.println("RECREATED RAW(RP_SRC)=" + ((JsonElement)rpRecreated.getData()));
-		sp = ApiManager.mapFromApi((JsonElement)rpRecreated.getData(), SourcePojo.class, new SourcePojoApiMap(null, null, communities));
+		sp = ApiManager.mapFromApi((JsonElement)rpRecreated.getData(), SourcePojo.class, new SourcePojoApiMap(null, communities, communities));
 		System.out.println("RECREATED SRC(RAW(RP_SRC))=" + ((JsonElement)rpRecreated.getData()));
 		
 		// Real-life source pojo testing:
@@ -227,9 +355,13 @@ public class TestCode {
 		// (display results of API mappings)
 		DocumentPojo docApi = DocumentPojo.fromDb(docApiDbo, DocumentPojo.class);
 		ResponsePojo rp3 = new ResponsePojo(null, docApi, new DocumentPojoApiMap());
+
+		System.out.println("TIME_DOC_API1_CREATED="+docApi.getCreated());
 		System.out.println("DOC_API1=" + rp3.toApi());
 		DocumentPojoApiMap.mapToApi(docApiDbo);
 		System.out.println("DOC_API2=" + BaseApiPojo.getDefaultBuilder().setPrettyPrinting().create().toJson(docApiDbo));
+		DocumentPojo docFromApi = ApiManager.mapFromApi(ApiManager.mapToApi(docApi, null), DocumentPojo.class, null);
+		System.out.println("TIME_DOC_API1_CREATED_INV="+docFromApi.getCreated());
 		
 /////////////////////////////////////////////////////////////////////////////
 		
@@ -266,10 +398,16 @@ public class TestCode {
 		
 		//DB: Read/write feed with metadata
 		BasicDBObject query = new BasicDBObject("metadata", new BasicDBObject("$exists", true)); // (complex query so can't represent using pojos)
+		query.put("entities", new BasicDBObject("$size", 3));
 		////////////////////////////////////////////////
 		//CANONICAL EXAMPLE:
 		DocumentPojo doc = DocumentPojo.fromDb(documentDb.findOne(query), DocumentPojo.class);
 		System.out.println("DOC1="+doc.toDb());
+		BasicDBList dblTest = (BasicDBList) doc.toDb().get("entities");
+		BasicDBObject dboTest = (BasicDBObject) dblTest.get(0);
+		if (!dboTest.get("doccount").getClass().toString().equals("class java.lang.Long")) {
+			throw new RuntimeException(dboTest.get("doccount").getClass().toString() + " SHOULD BE LONG");
+		}
 		////////////////////////////////////////////////
 		System.out.println("DOC2="+new Gson().toJson(doc));
 		doc = DocumentPojo.fromDb(documentDb.findOne(query), new TypeToken<DocumentPojo>(){}); // (alternative to the prettier DocumentPojo.class, needed for container classes)

@@ -117,6 +117,10 @@ package com.ikanow.infinit.e.shared.model.constant
 		public static const SET_MODULES_USER_ACTION:String = "Save Modules";
 		
 		// community service
+		public static const GET_COMMUNITIES_ALL_URL:String = SERVER_URL + "social/community/getall/";
+		
+		public static const GET_COMMUNITIES_ALL_URL_ACTION:String = "All Community Info";
+		
 		public static const GET_COMMUNITIES_PUBLIC_URL:String = SERVER_URL + "social/community/getpublic/";
 		
 		public static const GET_COMMUNITIES_PUBLIC_ACTION:String = "Community Info";
@@ -131,6 +135,8 @@ package com.ikanow.infinit.e.shared.model.constant
 		
 		// source service
 		public static const GET_SOURCES_GOOD_URL:String = SERVER_URL + "config/source/good/";
+		
+		public static const GET_SOURCE_URL_PARAM:String = "stripped=true";
 		
 		public static const GET_SOURCES_GOOD_ACTION:String = "Good Sources";
 		

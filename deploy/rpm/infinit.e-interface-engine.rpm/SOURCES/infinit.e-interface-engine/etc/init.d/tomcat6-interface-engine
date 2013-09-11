@@ -58,7 +58,9 @@ fi
 CONNECTOR_PORT="${CONNECTOR_PORT:-8080}"
 
 # Path to the tomcat launch script
-TOMCAT_SCRIPT="/usr/sbin/tomcat6"
+#(this doesn't work with later versions, just use the older version, which is fine as far as I can tell)
+#(overridden in the sysconfig file sourced above)
+TOMCAT_SCRIPT="${TOMCAT_SCRIPT:-/usr/sbin/tomcat6}"
 
 # Tomcat program name
 TOMCAT_PROG="${NAME}"
@@ -222,6 +224,22 @@ function start() {
 	    cp /opt/tomcat-infinite/interface-engine/templates/AppConstants.js.INTERNAL /opt/tomcat-infinite/interface-engine/webapps/internal/AppConstants.js
 	    chown tomcat.tomcat /opt/tomcat-infinite/interface-engine/webapps/internal/AppConstants.js
 	fi    
+    if [[ -d /opt/infinite-home/lib/extractors/ ]]; then
+    
+		# (quick check: has the interface engine API been created yet - only if we need to copy extractors across)
+		if [ "$(ls -A /opt/infinite-home/lib/extractors/)" ]; 
+		then
+		    for i in 1 2 3 4 5; do
+			    if [[ ! -d /opt/tomcat-infinite/interface-engine/webapps/api/WEB-INF/lib ]]; then
+	    			sleep 6
+			    fi
+			done
+    	fi    
+    
+    	for i in `find /opt/infinite-home/lib/extractors/ -name "*.jar"`; do    	
+    		cp $i /opt/tomcat-infinite/interface-engine/webapps/api/WEB-INF/lib
+    	done
+	fi
     return $RETVAL
 }
 

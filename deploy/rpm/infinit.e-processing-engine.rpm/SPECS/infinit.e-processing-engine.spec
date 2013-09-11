@@ -5,7 +5,7 @@ Summary: Infinit.e processing (harvesting, enrichment, generic and custom proces
 Name: infinit.e-processing-engine
 Version: INFINITE_VERSION
 Release: INFINITE_RELEASE
-Requires: tomcat6, infinit.e-config, infinit.e-db-instance
+Requires: tomcat6, infinit.e-config, infinit.e-db-instance, elasticsearch >= 0.18.7-8
 License: None
 Group: Infinit.e
 BuildArch: noarch
@@ -44,6 +44,8 @@ Infinit.e harvesting and cleansing services
 	ln -s -f infinit.e.processing.generic.library-INFINITE_VERSION-INFINITE_RELEASE.jar infinit.e.processing.generic.library.jar
 	ln -s -f infinit.e.core.server-INFINITE_VERSION-INFINITE_RELEASE.jar infinit.e.core.server.jar
 	ln -s -f infinit.e.mongo-indexer-INFINITE_VERSION-INFINITE_RELEASE.jar infinit.e.mongo-indexer.jar
+	cd $RPM_BUILD_DIR/mnt/opt/infinite-home/lib/plugins
+	ln -s -f infinit.e.hadoop.prototyping_engine-INFINITE_VERSION-INFINITE_RELEASE.jar infinit.e.hadoop.prototyping_engine.jar
 
 %post
 #
@@ -66,9 +68,9 @@ Infinit.e harvesting and cleansing services
 		echo "tomcat    hard    nofile          65536" >> /etc/security/limits.conf
 	fi
 
-#
-# INSTALL *AND* UPGRADE
-#	
+	# Install Hadoop prototyping engine
+	mongo custommr /mnt/opt/infinite-home/db-scripts/hadoop_prototype_engine.js || echo "Mongo not configured, couldn't load Hadoop Prototyping Engine"
+
 	# Handle relocation:
 	if [ "$RPM_INSTALL_PREFIX" != "/opt" ]; then
 		echo "(Creating links from /opt to $RPM_INSTALL_PREFIX)"
@@ -116,12 +118,16 @@ Infinit.e harvesting and cleansing services
 %attr(-,root,root) /etc/cron.d/infinite-px-engine
 %dir /mnt/opt/infinite-home
 %dir /mnt/opt/infinite-home/bin
+%dir /mnt/opt/infinite-home/lib/plugins
 /mnt/opt/infinite-home/bin/STOPFILE
+/mnt/opt/infinite-home/bin/STOP_SYNC_FILE
 %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/custommr.sh
 %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/hadoop-setup.sh
 %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/reindex_from_db.sh
+%config %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/do_harvest_cycle.sh
 %config %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/infinite-px-engine.sh
 %config %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/sync_features.sh
+%config %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/generate_temporal_aggregations.sh
 %config %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/weekly_sources_report.sh
 %config %attr(755,tomcat,tomcat) /mnt/opt/infinite-home/bin/reset_bad_harvest.sh
 %config /mnt/opt/infinite-home/bin/security.policy
@@ -131,8 +137,11 @@ Infinit.e harvesting and cleansing services
 /mnt/opt/infinite-home/db-scripts/update_doc_counts.js
 /mnt/opt/infinite-home/db-scripts/rebuild_entity_feature.js
 /mnt/opt/infinite-home/db-scripts/rebuild_assoc_feature.js
+/mnt/opt/infinite-home/db-scripts/hadoop_prototype_engine.js
+/mnt/opt/infinite-home/db-scripts/temporal_entity_aggregation.js
 
 %dir /mnt/opt/infinite-home/lib
+%dir /mnt/opt/infinite-home/lib/extractors
 /mnt/opt/infinite-home/lib/infinit.e.data_model.jar
 /mnt/opt/infinite-home/lib/infinit.e.harvest.library.jar
 /mnt/opt/infinite-home/lib/infinit.e.query.library.jar
@@ -149,4 +158,7 @@ Infinit.e harvesting and cleansing services
 /mnt/opt/infinite-home/lib/infinit.e.mongo-indexer-INFINITE_VERSION-INFINITE_RELEASE.jar
 /mnt/opt/infinite-home/lib/jcifs-1.3.17.jar
 /mnt/opt/infinite-home/lib/tika-app-1.0.jar
+/mnt/opt/infinite-home/lib/GridFSZipFile.jar
 /mnt/opt/infinite-home/lib/j-calais-0.2.1-jar-with-dependencies.jar
+/mnt/opt/infinite-home/lib/plugins/infinit.e.hadoop.prototyping_engine.jar
+/mnt/opt/infinite-home/lib/plugins/infinit.e.hadoop.prototyping_engine-INFINITE_VERSION-INFINITE_RELEASE.jar

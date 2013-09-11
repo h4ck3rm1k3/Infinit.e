@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -40,16 +41,24 @@ import org.elasticsearch.common.unit.DistanceUnit;
 import org.elasticsearch.index.query.BaseQueryBuilder;
 import org.elasticsearch.index.query.BoolFilterBuilder;
 import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.CrossVersionQueryBuilders;
+import org.elasticsearch.index.query.CustomFiltersScoreQueryBuilder;
 import org.elasticsearch.index.query.FilterBuilders;
+import org.elasticsearch.index.query.GeoDistanceFilterBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.index.query.RangeQueryBuilder;
 import org.elasticsearch.search.sort.SortOrder;
 
+import com.google.common.collect.ArrayListMultimap;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.ikanow.infinit.e.api.knowledge.aliases.AliasLookupTable;
+import com.ikanow.infinit.e.api.knowledge.aliases.AliasManager;
 import com.ikanow.infinit.e.api.knowledge.processing.AggregationUtils;
 import com.ikanow.infinit.e.api.knowledge.processing.QueryDecayFactory;
 import com.ikanow.infinit.e.api.knowledge.processing.ScoringUtils;
 import com.ikanow.infinit.e.api.social.sharing.ShareHandler;
+import com.ikanow.infinit.e.api.utils.PropertiesManager;
 import com.ikanow.infinit.e.api.utils.RESTTools;
 import com.ikanow.infinit.e.api.utils.SimpleBooleanParser;
 import com.ikanow.infinit.e.data_model.api.BasePojoApiMap;
@@ -63,12 +72,14 @@ import com.ikanow.infinit.e.data_model.store.DbManager;
 import com.ikanow.infinit.e.data_model.store.document.AssociationPojo;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
 import com.ikanow.infinit.e.data_model.store.document.EntityPojo;
+import com.ikanow.infinit.e.data_model.store.feature.entity.EntityFeaturePojo;
 import com.ikanow.infinit.e.data_model.store.social.sharing.SharePojo;
 import com.ikanow.infinit.e.data_model.utils.GeoOntologyMapping;
 import com.mongodb.BasicDBObject;
 import com.mongodb.DBCollection;
 import com.mongodb.DBCursor;
 import com.mongodb.MongoException;
+import com.mongodb.ReadPreference;
 
 //
 // This code contains all the processing logic for the (beta)
@@ -82,11 +93,34 @@ public class QueryHandler {
 	
 	public QueryHandler() {}
 	
+	// Query cache (re-created per request, but there's some static things in here for performance):
+	private AliasLookupTable _aliasLookup = null;
+	
+	private LinkedList<AdvancedQueryPojo.QueryTermPojo> _extraFullTextTerms = null;
+		// (used to allow entity terms to add top level (full text) terms)	
+	
+	private static PropertiesManager _properties = null;
+	private static com.ikanow.infinit.e.data_model.utils.PropertiesManager _dataModelProps = null;
+	private static String _aggregationAccuracy = "full"; 
+	
+	private AdvancedQueryPojo.QueryScorePojo _scoringParams;
+		// (need this here so we can set the adjust param for complex queries)
+	
+	private static int _replicaSetDistributionRatio = -1;
+	
 ////////////////////////////////////////////////////////////////////////
 	
 // 0] Top level processing
 	
 	public ResponsePojo doQuery(String userIdStr, AdvancedQueryPojo query, String communityIdStrList, StringBuffer errorString) throws UnknownHostException, MongoException, IOException {
+
+		if (null == _properties) {
+			_properties = new PropertiesManager();
+			_aggregationAccuracy = _properties.getAggregationAccuracy();
+			_dataModelProps = new com.ikanow.infinit.e.data_model.utils.PropertiesManager();
+			_replicaSetDistributionRatio = 1 + _dataModelProps.getDocDbReadDistributionRatio();
+		}
+		_scoringParams = query.score;
 		
 		// (NOTE CAN'T ACCESS "query" UNTIL AFTER 0.1 BECAUSE THAT CAN CHANGE IT) 
 		
@@ -100,11 +134,20 @@ public class QueryHandler {
 		//(timing)
 		long nQuerySetupTime = System.currentTimeMillis();
 		
+		// Intialize alias if so required:
+		if ((null == query.expandAlias) || query.expandAlias) {
+			AliasManager aliasManager = AliasManager.getAliasManager();
+			if (null != aliasManager) {
+				_aliasLookup = aliasManager.getAliasLookupTable(communityIdStrList, communityIdStrs, null, userIdStr);
+			}
+		}
+		// (end initialize index)
+		
 		// Create a multi-index to check against all relevant shards:
-		StringBuffer sb = new StringBuffer(DocumentPojoIndexMap.globalDocumentIndex_);
-		sb.append(',').append(DocumentPojoIndexMap.manyGeoDocumentIndex_);
+		StringBuffer sb = new StringBuffer(DocumentPojoIndexMap.globalDocumentIndexCollection_);
+		sb.append(',').append(DocumentPojoIndexMap.manyGeoDocumentIndexCollection_);
 		for (String sCommunityId: communityIdStrs) {
-			sb.append(',').append("doc_").append(sCommunityId);
+			sb.append(',').append("docs_").append(sCommunityId);
 		}
 		sb.append('/').append(DocumentPojoIndexMap.documentType_);
 		ElasticSearchManager indexMgr = ElasticSearchManager.getIndex(sb.toString());
@@ -147,6 +190,7 @@ public class QueryHandler {
 				else if ((1 == entityTypeFilterStrings.length) && (entityTypeFilterStrings[0].isEmpty())) {
 					entityTypeFilterStrings = null;					
 				}
+				// (note this is important because it means we can always check entityTypeFilterStrings[0].getCharAt(0) for -ve filtering)
 			}
 			if (null != query.output.filter.assocVerbs) {
 				assocVerbFilterStrings = query.output.filter.assocVerbs;				
@@ -156,6 +200,7 @@ public class QueryHandler {
 				else if ((1 == assocVerbFilterStrings.length) && (assocVerbFilterStrings[0].isEmpty())) {
 					assocVerbFilterStrings = null;					
 				}
+				// (note this is important because it means we can always check assocVerbFilterStrings[0].getCharAt(0) for -ve filtering)
 			}
 		}
 		
@@ -182,9 +227,24 @@ public class QueryHandler {
 				BaseQueryBuilder queryElements[] = new BaseQueryBuilder[nQueryElements];
 				StringBuffer sQueryElements[] = new StringBuffer[nQueryElements];
 				for (int i = 0; i < nQueryElements; ++i) {
+					_extraFullTextTerms = null;	
 					queryElements[i] = this.parseQueryTerm(query.qt.get(i), (sQueryElements[i] = new StringBuffer()));
-				}					
-				queryObj = this.parseLogic(query.logic, queryElements, sQueryElements, querySummary);		
+					
+					// Extra full text terms generated by aliasing:
+					if (null != _extraFullTextTerms) {
+						BoolQueryBuilder extraTerms = QueryBuilders.boolQuery().should(queryElements[i]);
+						StringBuffer discard = new StringBuffer(); // (we already have added the info the query elements)
+						for (AdvancedQueryPojo.QueryTermPojo qtExtra: _extraFullTextTerms) {
+							extraTerms = extraTerms.should(this.parseQueryTerm(qtExtra, discard));
+						}
+						queryElements[i] = extraTerms; 
+						_extraFullTextTerms = null; // (reset ready for next term...) 
+					}//TESTED				
+					
+				}//end loop over query terms
+				
+				queryObj = this.parseLogic(query.logic, queryElements, sQueryElements, querySummary);	
+				
 				if (null == queryObj) { //error parsing logic
 					errorString.append(": Error parsing logic");
 					return null;
@@ -216,36 +276,54 @@ public class QueryHandler {
 		int nRecordsToSkip = query.output.docs.skip;
 		int nRecordsToGet = query.score.numAnalyze;
 
-		if (query.score.sigWeight > 0.0) { // Need to post-process and whittle down the Lucene results
+		final int nMAXRECORDSTOOUTPUT = 10000;
+		final int nMAXRECORDSTOGET = 20000;
+		
+		// Some sanity checking on doc numbers:
+		if (nRecordsToOutput > nMAXRECORDSTOOUTPUT) { // Upper limit...
+			errorString.append(": Max # docs to return is 10000.");
+			return null;
+		}
+		if (nRecordsToGet < nRecordsToOutput) {
+			nRecordsToGet = nRecordsToOutput;
+		}
+		else if (nRecordsToGet > nMAXRECORDSTOGET) { // Upper limit...
+			nRecordsToGet = nMAXRECORDSTOGET; // (we can do something sensible with this so carry on regardless)
+		}
+		
+		boolean bUseSignificance = (query.score.sigWeight > 0.0);
+		boolean bNeedExtraResultsForEnts = 
+			((query.output.aggregation != null) && (query.output.aggregation.entsNumReturn != null) && (query.output.aggregation.entsNumReturn > 0))
+				||
+			(query.output.docs.enable && (query.output.docs.numReturn > 0) && (query.output.docs.ents) && (query.score.scoreEnts));
+		
+		if (bUseSignificance || bNeedExtraResultsForEnts) {
 			
 			// Some logic taken from the original "knowledge/search"
-			if ( nRecordsToSkip + nRecordsToOutput > nRecordsToGet ) {
+			while ( (nRecordsToSkip + nRecordsToOutput > nRecordsToGet) && (nRecordsToGet <= nMAXRECORDSTOGET) )
+			{
 				nRecordsToGet += nRecordsToGet;
 			}
-			if ( nRecordsToSkip > nRecordsToGet) {
-				nRecordsToSkip = nRecordsToGet;
+			if (nRecordsToGet > nMAXRECORDSTOGET) {
+				errorString.append(": Can only skip through to 20000 documents.");				
+				return null;
 			}
-			if ( nRecordsToSkip + nRecordsToOutput > nRecordsToGet) {
-				nRecordsToOutput = nRecordsToGet - nRecordsToSkip;
-			}
-		}
-		else {
-			searchSettings.setFrom(nRecordsToSkip);
-		}
-		//TESTED
-		if (query.output.docs.enable 
-				|| ((null != query.output.docs.eventsTimeline) && query.output.docs.eventsTimeline)
-				|| ((null != query.output.aggregation) && (null != query.output.aggregation.entsNumReturn) && (query.output.aggregation.entsNumReturn > 0)))
-		{
-			// (ie if docs enabled, event timeline enabled, or entity aggregation enabled - all of these require documents to be retrieved)
-			
-			//TODO (INF-1230): ensure this is kept up to date when move to aggList
 			searchSettings.setSize(nRecordsToGet);
+			
+			//TESTED
 		}
-		else {
+		else if (query.output.docs.enable) { // In this case we just need the minimum number of records
+			// (whether searching by date or by relevance)
+			searchSettings.setFrom(nRecordsToSkip);
+			nRecordsToSkip = 0; // (so it isn't double counted in the processing module)
+			nRecordsToGet = nRecordsToOutput;
+			searchSettings.setSize(nRecordsToGet);
+			//TESTED
+		}
+		else { // In thise case we're just outputting aggregations, and not even ones that come from the docs
 			nRecordsToGet = 0; // (use this variable everywhere where we care about bring docs back either to output or for suitable aggregation)
 			searchSettings.setSize(0);
-		}			
+		}
 		
 		// Sort on score if relevance is being used		
 		
@@ -266,16 +344,40 @@ public class QueryHandler {
 		// 0.4.2] Prox scoring (needs to happen after [0.3]
 
 		// Add proximity scoring:
-		if (nRecordsToGet > 0) {
-			queryObj = addProximityBasedScoring(queryObj, searchSettings, query.score);				
-		}// (else not worth the effort)
-								
+		boolean bLowAccuracyDecay = false;
+		if ((nRecordsToGet > 0) || (null == _scoringParams.adjustAggregateSig) || _scoringParams.adjustAggregateSig) {
+			// (ie if we're getting docs or applying scores to entities)
+			
+			if (!_aggregationAccuracy.equals("full")) {
+				bLowAccuracyDecay = true;
+			}
+			queryObj = addProximityBasedScoring(queryObj, searchSettings, query.score, parentFilterObj, bLowAccuracyDecay);
+			
+			if (null == _scoringParams.adjustAggregateSig) { // auto-decide .. if ftext is set and is non-trivial
+				if ((null != query.score.timeProx) || (null != query.score.geoProx)) {
+						// (These are set to null above if badly formed)
+					_scoringParams.adjustAggregateSig = true;					
+				}
+			}
+			
+		}// (else not worth the effort)	
+		
+		// 0.4.3] Source weightings (if any)
+		
+		queryObj = applyManualWeights(queryObj, query.score);
+		
 	// 0.5] Pre-lucene output options
 		
 		// only return the id field and score
 		// (Both _id and score come back as default options, SearchHit:: getId and getScore, don't need anything else)
 
 		// Facets
+		
+		// (These are needed for the case where we need to perform aggregations manually)
+		Integer manualEntsNumReturn = null;
+		Integer manualEventsNumReturn = null;
+		Integer manualFactsNumReturn = null;
+		Integer manualGeoNumReturn = null;
 		
 		//DEBUG
 		//System.out.println(new Gson().toJson(query.output.aggregation));
@@ -294,7 +396,39 @@ public class QueryHandler {
 		}
 		else { // Apply various aggregation (=="facet") outputs to searchSettings
 			boolean bSpecialCase = (null != query.raw) && (null != query.raw.query);
-			AggregationUtils.parseOutputAggregation(query.output.aggregation, entityTypeFilterStrings, assocVerbFilterStrings, searchSettings, bSpecialCase?parentFilterObj:null);
+			
+			if (!_aggregationAccuracy.equals("full")) {
+				if (null != query.output.aggregation) {
+					if (_aggregationAccuracy.equals("low")) {
+						manualEntsNumReturn = query.output.aggregation.entsNumReturn;
+						manualEventsNumReturn = query.output.aggregation.eventsNumReturn;
+						manualFactsNumReturn = query.output.aggregation.factsNumReturn;
+						manualGeoNumReturn = query.output.aggregation.geoNumReturn;
+					}										
+					query.output.aggregation.entsNumReturn = null;
+					query.output.aggregation.eventsNumReturn = null;
+					query.output.aggregation.factsNumReturn = null;
+					query.output.aggregation.geoNumReturn = null;
+					// (allow time aggregation)
+					// (allow source aggregation)
+				}
+			}
+			AggregationUtils.parseOutputAggregation(query.output.aggregation, _aliasLookup, entityTypeFilterStrings, assocVerbFilterStrings, searchSettings, bSpecialCase?parentFilterObj:null);
+
+			// In partial accuracy case, restore aggregation
+			if (null != manualEntsNumReturn) {
+				query.output.aggregation.entsNumReturn = manualEntsNumReturn;
+			}
+			if (null != manualEventsNumReturn) {
+				query.output.aggregation.eventsNumReturn = manualEventsNumReturn;
+			}
+			if (null != manualFactsNumReturn) {
+				query.output.aggregation.factsNumReturn = manualFactsNumReturn;
+			}
+			if (null != manualGeoNumReturn) {
+				query.output.aggregation.geoNumReturn = manualGeoNumReturn;
+			}
+			//TESTED
 		}
 		//TESTED x2			
 		
@@ -302,6 +436,10 @@ public class QueryHandler {
 		nQuerySetupTime = System.currentTimeMillis() - nQuerySetupTime;
 		
 	// 0.6] Perform Lucene query
+		
+		if ((null != query.explain) && query.explain) { // (for diagnostic - will return lucene explanation)
+			searchSettings.setExplain(true);
+		}
 		
 		SearchResponse queryResults = null;
 		if ((null != query.raw) && (null != query.raw.query)) 
@@ -315,6 +453,7 @@ public class QueryHandler {
 			// Where I can, use the source filter as part of the query so that
 			// facets will apply to query+filter, not just filter
 			queryObj = QueryBuilders.boolQuery().must(queryObj).must(QueryBuilders.constantScoreQuery(parentFilterObj).boost(0.0F));
+			
 			queryResults = indexMgr.doQuery(queryObj, null, searchSettings);
 		}//TESTED '{}' etc
 		
@@ -330,7 +469,7 @@ public class QueryHandler {
         stats.start = (long)nRecordsToSkip;
         
 		if (nRecordsToGet > 0) {
-			stats.setScore(queryResults.getHits(), (null != query.score.geoProx)||(null != query.score.timeProx));
+			stats.setScore(queryResults.getHits(), (null != query.score.geoProx)||(null != query.score.timeProx), (null != query.explain) && query.explain);
 		}
 
 		//DEBUG
@@ -345,34 +484,60 @@ public class QueryHandler {
 		List<BasicDBObject> docs = null;
 		
 		//(aggregation)
-		LinkedList<BasicDBObject> aggregatedEntities = null;
+		LinkedList<BasicDBObject> lowAccuracyAggregatedEntities = null; // (always low accuracy)
 		LinkedList<BasicDBObject> standaloneEvents = null;
+		LinkedList<BasicDBObject> lowAccuracyAggregatedEvents = null;
+		LinkedList<BasicDBObject> lowAccuracyAggregatedFacts = null;
+		AggregationUtils.GeoContainer lowAccuracyAggregatedGeo = null;
+		AggregationUtils.GeoContainer extraAliasAggregatedGeo = null;
 		
 		ScoringUtils scoreStats = null;
 		if (null != stats.getIds()) {
 
-			DBCursor docs0 = this.getDocIds(DbManager.getDocument().getMetadata(), stats.getIds(), nRecordsToGet);
+			DBCursor docs0 = this.getDocIds(DbManager.getDocument().getMetadata(), stats.getIds(), nRecordsToGet, query.output, query.score);
 			nMongoTime = System.currentTimeMillis() - nMongoTime;
 							
 			nProcTime_tmp = System.currentTimeMillis();
 			
-			// Entity aggregation:
+			// Entity aggregation (CURRENTLY ALWAYS LOW AGGREGATION):
 			if ((null != query.output.aggregation) && (null != query.output.aggregation.entsNumReturn) && (query.output.aggregation.entsNumReturn > 0)) {					
-				aggregatedEntities = new LinkedList<BasicDBObject>();
+				lowAccuracyAggregatedEntities = new LinkedList<BasicDBObject>();
 			}
 			
 			// Standalone events:
 			if ((query.output.docs != null) && (query.output.docs.eventsTimeline != null) && query.output.docs.eventsTimeline) {
 				standaloneEvents = new LinkedList<BasicDBObject>();
 			}				
-
-			scoreStats = new ScoringUtils(); 
+			
+			// Low accuracy aggregations:
+			
+			if ((null != manualEventsNumReturn) && (manualEventsNumReturn > 0)) {
+				lowAccuracyAggregatedEvents = new LinkedList<BasicDBObject>();
+			}
+			if ((null != manualFactsNumReturn) && (manualFactsNumReturn > 0)) {
+				lowAccuracyAggregatedFacts = new LinkedList<BasicDBObject>();				
+			}
+			
+			if ((null != manualGeoNumReturn) && (manualGeoNumReturn > 0)) {
+				lowAccuracyAggregatedGeo = new AggregationUtils.GeoContainer();								
+			}
+			else if ((null != query.output.aggregation) && (null != query.output.aggregation.geoNumReturn) && (query.output.aggregation.geoNumReturn > 0))
+			{
+				// (only if not using low accuracy aggregation ... otherwise it all gets dumped in lowAccuracyAggregatedGeo)
+				extraAliasAggregatedGeo = new AggregationUtils.GeoContainer();				
+			}
+			
+			scoreStats = new ScoringUtils();
+			scoreStats.setAliasLookupTable(_aliasLookup);
 			docs = scoreStats.calcTFIDFAndFilter(DbManager.getDocument().getMetadata(), 
-														docs0, query.score, query.output, stats, 
+														docs0, query.score, query.output, stats, bLowAccuracyDecay,
 															nRecordsToSkip, nRecordsToOutput, 
 																communityIdStrs,
 																entityTypeFilterStrings, assocVerbFilterStrings,
-																aggregatedEntities, standaloneEvents);
+																standaloneEvents, 
+																lowAccuracyAggregatedEntities, 
+																lowAccuracyAggregatedGeo, extraAliasAggregatedGeo,
+																lowAccuracyAggregatedEvents, lowAccuracyAggregatedFacts);
 			nProcTime += (System.currentTimeMillis() - nProcTime_tmp);
 		}
 		else {
@@ -390,11 +555,20 @@ public class QueryHandler {
 
 		// 0.9.2] Facets:
 
-		if (null != aggregatedEntities) { // Entity aggregation
-			rp.setEntities(aggregatedEntities);				
+		if (null != lowAccuracyAggregatedEntities) { // Entity aggregation
+			rp.setEntities(lowAccuracyAggregatedEntities);				
 		}
 		if (null != standaloneEvents) {
 			rp.setEventsTimeline(standaloneEvents);
+		}
+		if (null != lowAccuracyAggregatedGeo) {
+			rp.setGeo(lowAccuracyAggregatedGeo.geotags, (int)lowAccuracyAggregatedGeo.maxCount, (int)lowAccuracyAggregatedGeo.minCount);
+		}
+		if (null != lowAccuracyAggregatedEvents) {
+			rp.setEvents(lowAccuracyAggregatedEvents);
+		}
+		if (null != lowAccuracyAggregatedFacts) {
+			rp.setFacts(lowAccuracyAggregatedFacts);
 		}
 		
 		if ((null != query.output.aggregation) && (null != query.output.aggregation.raw)) {
@@ -405,7 +579,7 @@ public class QueryHandler {
 			if (0.0 == query.score.sigWeight) {
 				scoreStats = null; // (don't calculate event/fact aggregated significance if it's not wanted)
 			}
-			AggregationUtils.loadAggregationResults(rp, queryResults.getFacets().getFacets(), query.output.aggregation, scoreStats);
+			AggregationUtils.loadAggregationResults(rp, queryResults.getFacets().getFacets(), query.output.aggregation, scoreStats, _aliasLookup, entityTypeFilterStrings, assocVerbFilterStrings, extraAliasAggregatedGeo);
 			
 		} // (end facets not overwritten)			
 		
@@ -430,6 +604,7 @@ public class QueryHandler {
 		_logMsg.setLength(0);
 		_logMsg.append("knowledge/query querylen=").append(querySummary.length());
 		_logMsg.append(" query=").append(querySummary.toString());
+		_logMsg.append(" userid=").append(userIdStr);
 		_logMsg.append(" groups=").append(communityIdStrList);
 		_logMsg.append(" found=").append(stats.found);
 		_logMsg.append(" luceneTime=").append(nLuceneTime).append(" ms");
@@ -528,32 +703,36 @@ public class QueryHandler {
 
 ////////////////////////////////////////////////////////////////////////
 	
-// 1.X1] Output filter parsing	
+// 1.X2] Output filter parsing	
 
 	BoolFilterBuilder parseOutputFiltering(String[] entityTypeFilterStrings, String[] assocVerbFilterStrings)
 	{
 		BoolFilterBuilder outputFilter = null;
 		
 		if (null != entityTypeFilterStrings) {
-			outputFilter = FilterBuilders.boolFilter();
-			
-			outputFilter.must(FilterBuilders.nestedFilter(DocumentPojo.entities_, 
-					FilterBuilders.termsFilter(EntityPojo.type_, entityTypeFilterStrings)));
+			if ('-' != entityTypeFilterStrings[0].charAt(0)) { // (negative entity type, don't add to filter)
+				outputFilter = FilterBuilders.boolFilter();
+								
+				outputFilter.must(FilterBuilders.nestedFilter(DocumentPojo.entities_, 
+						FilterBuilders.termsFilter(EntityPojo.type_, entityTypeFilterStrings)));
+			}
 		}
 		if (null != assocVerbFilterStrings) {
-			if (null == outputFilter) {
-				outputFilter = FilterBuilders.boolFilter();				
+			if ('-' != assocVerbFilterStrings[0].charAt(0)) { // (negative verb, don't add to filter)
+				if (null == outputFilter) {
+					outputFilter = FilterBuilders.boolFilter();				
+				}
+				BoolFilterBuilder verbFilter = FilterBuilders.boolFilter();	
+				StringBuffer sb = new StringBuffer();
+				for (String assocVerb: assocVerbFilterStrings) {
+					sb.setLength(0);
+					sb.append('"').append(assocVerb).append('"');
+					verbFilter.should(FilterBuilders.nestedFilter(DocumentPojo.associations_, 
+							QueryBuilders.queryString(sb.toString()).field(AssociationPojo.verb_category_)));
+					//(closest to exact that we can manage, obv verb_cat should actually be not_analyzed)
+				}
+				outputFilter.must(verbFilter);
 			}
-			BoolFilterBuilder verbFilter = FilterBuilders.boolFilter();	
-			StringBuffer sb = new StringBuffer();
-			for (String assocVerb: assocVerbFilterStrings) {
-				sb.setLength(0);
-				sb.append('"').append(assocVerb).append('"');
-				verbFilter.should(FilterBuilders.nestedFilter(DocumentPojo.associations_, 
-						QueryBuilders.queryString(sb.toString()).field(AssociationPojo.verb_category_)));
-				//(closest to exact that we can manage, obv verb_cat should actually be not_analyzed)
-			}
-			outputFilter.must(verbFilter);
 		}		
 		return outputFilter;
 	}//TESTED
@@ -565,6 +744,7 @@ public class QueryHandler {
 	// (Not needed any more, but kept here for illustrative purposes)
 	//private static Pattern _luceneExactPattern = Pattern.compile("([\"+~*?:|&(){}\\[\\]\\^\\!\\-\\\\ ])");	
 	private BaseQueryBuilder parseQueryTerm(AdvancedQueryPojo.QueryTermPojo qt, StringBuffer sQueryTerm) {
+		
 		BaseQueryBuilder term = null;
 		BoolQueryBuilder boolTerm = null;
 		
@@ -586,6 +766,11 @@ public class QueryHandler {
 			else {
 				term = QueryBuilders.queryString(qt.ftext).field("_all").field(DocumentPojo.fullText_);				
 			}
+			if (null == _scoringParams.adjustAggregateSig) { // auto-decide .. if ftext is set and is non-trivial
+				if (qt.ftext.contains(" ")) {
+					_scoringParams.adjustAggregateSig = true;
+				}
+			}
 		}//TESTED (logic0)
 		
 	// 1.2] Exact text	
@@ -600,12 +785,12 @@ public class QueryHandler {
 			}
 			else { // Normal query
 				if (null != qt.metadataField) { // Metadata only
-					termQ = QueryBuilders.textPhraseQuery(qt.metadataField, qt.etext);
+					termQ = CrossVersionQueryBuilders.matchPhraseQuery(qt.metadataField, qt.etext);
 				}
 				else { // Normal query
 					termQ = QueryBuilders.boolQuery().
-						should(QueryBuilders.textPhraseQuery("_all", qt.etext)).
-						should(QueryBuilders.textPhraseQuery(DocumentPojo.fullText_, qt.etext));
+						should(CrossVersionQueryBuilders.matchPhraseQuery("_all", qt.etext)).
+						should(CrossVersionQueryBuilders.matchPhraseQuery(DocumentPojo.fullText_, qt.etext));
 				}
 			}
 			sQueryTerm.append('(');
@@ -627,7 +812,7 @@ public class QueryHandler {
 	
 	// 1.3] Entity 	
 		
-		if ((null != qt.entity) || (null != qt.entityValue)) {
+		if ((null != qt.entity) || (null != qt.entityValue) || ((null == qt.assoc) && (null != qt.sentiment))) { // (if no association specified then sentiment applies to entities)
 			if (sQueryTerm.length() > 1) {
 				sQueryTerm.append(" AND ");
 			}
@@ -709,7 +894,7 @@ public class QueryHandler {
 			}
 			sQueryTerm.append('(');
 			
-			BaseQueryBuilder termQ = QueryBuilders.nestedQuery(DocumentPojo.associations_, this.parseEventTerm(qt.assoc, sQueryTerm));
+			BaseQueryBuilder termQ = QueryBuilders.nestedQuery(DocumentPojo.associations_, this.parseAssociationTerm(qt.assoc, qt.sentiment, sQueryTerm));
 			if (null != termQ) {
 				if (null == term) {
 					term = termQ;
@@ -790,32 +975,157 @@ public class QueryHandler {
 		
 	// 1.3c] Logic	
 		
-		if (null == termQ) { // entities.index or fully-specified value,type
+		if ((null == termQ) && (null != qt.entity)) { // entities.index or fully-specified value,type
 			
 			sQueryTerm.append(sFieldName).append(":\"").append(qt.entity).append('"');
 			
 			// Just leave this fixed for entity expansion since we don't really support events anyway
 			// we'll have to sort this out later
+			BoolQueryBuilder termBoolQ = null;
+			
 			if ((null != qt.entityOpt) && qt.entityOpt.expandAlias) {
 				// Alias expansion code
 				// Easy bit:
-				 BoolQueryBuilder termBoolQ = QueryBuilders.boolQuery().should(QueryBuilders.termQuery(sFieldName, qt.entity));
+				 termBoolQ = QueryBuilders.boolQuery().should(QueryBuilders.termQuery(sFieldName, qt.entity));
 				// Interesting bit:
 				if (null != _tmpAliasMap) {
 					String[] terms = _tmpAliasMap.get(qt.entity).toArray(new String[0]);
 					if ((null != terms) && (terms.length > 0)) {
 						termQ = termBoolQ.should(QueryBuilders.termsQuery(EntityPojo.actual_name_, terms));
-						sQueryTerm.append(" OR entities.actual_name:$aliases");
+						sQueryTerm.append(" OR actual_name:$aliases");
 					}
 				}
-			}//TESTED logic3a,b,f
+			}//TESTED logic3a,b,f - actual_name expansion
+			
+			if ((null != qt.entityOpt) && qt.entityOpt.rawText) {
+				if (null == this._extraFullTextTerms) {
+					_extraFullTextTerms = new LinkedList<AdvancedQueryPojo.QueryTermPojo>();
+				}
+				String dName = qt.entityValue; 
+				if (null == dName) { // Derive disambiguated name if not directly specified
+					int nIndex2 = qt.entity.lastIndexOf('/');
+					dName = qt.entity.substring(0, nIndex2);
+				}//TESTED
+
+				if (EntityPojo.index_ == sFieldName) { // (note: can use pointers here)
+					AdvancedQueryPojo.QueryTermPojo qtExtra = new AdvancedQueryPojo.QueryTermPojo();
+					qtExtra.etext = dName;
+					_extraFullTextTerms.add(qtExtra);
+					sQueryTerm.append(" OR ((\"").append(dName).append('"').append("))");
+				}
+				else if (AssociationPojo.geo_index_ != sFieldName) { // (geo has no non-indexed form)
+					String nonIndexField = (AssociationPojo.entity1_index_ == sFieldName) ? AssociationPojo.entity1_ : AssociationPojo.entity2_;
+					if (null == termBoolQ) {
+						termBoolQ = QueryBuilders.boolQuery();
+					}
+					termQ = termBoolQ = termBoolQ.should(CrossVersionQueryBuilders.matchPhraseQuery(nonIndexField, dName));
+					sQueryTerm.append(" OR ").append(nonIndexField).append(":\"").append(dName).append('"');					
+				}//TESTED
+			}
+			//TESTED (entity+association) - entity options, add dname as exact text query
+			
+			if (null != _aliasLookup) {
+				EntityFeaturePojo masterAlias = _aliasLookup.getAliases(qt.entity);	
+					// (need to do it this way round to get the semantic links)
+				if (null != masterAlias) {
+					if (null == termBoolQ) {
+						termBoolQ = QueryBuilders.boolQuery();
+					}
+					sQueryTerm.append(" OR ").append(sFieldName).append(":$manual_aliases");
+					termBoolQ = termBoolQ.should(QueryBuilders.termQuery(sFieldName, qt.entity));
+					termQ = termBoolQ = termBoolQ.should(QueryBuilders.termsQuery(sFieldName, masterAlias.getAlias().toArray()));
+
+					// If want to add manual aliases as full text also...
+					if ((null != qt.entityOpt) && qt.entityOpt.rawText) {
+						if (null == this._extraFullTextTerms) {
+							_extraFullTextTerms = new LinkedList<AdvancedQueryPojo.QueryTermPojo>();
+						}
+						String nonIndexField = null;
+						if (AssociationPojo.geo_index_ != sFieldName) { // (geo has no non-indexed form)
+							nonIndexField = (AssociationPojo.entity1_index_ == sFieldName) ? AssociationPojo.entity1_ : AssociationPojo.entity2_;
+						}
+						
+						// (slightly annoying because I have to derive the dnames for all of them) 
+						for (String alias: masterAlias.getAlias()) {
+							int nIndex2 = alias.lastIndexOf('/');
+							String dName = alias.substring(0, nIndex2);
+							
+							if (EntityPojo.index_ == sFieldName) { // (note: can use pointers here)
+								AdvancedQueryPojo.QueryTermPojo qtExtra = new AdvancedQueryPojo.QueryTermPojo();
+								qtExtra.etext = dName;
+								_extraFullTextTerms.add(qtExtra);
+							}
+							else if (null != nonIndexField) {
+								termQ = termBoolQ = termBoolQ.should(CrossVersionQueryBuilders.matchPhraseQuery(nonIndexField, dName));
+							}
+						}
+						if (EntityPojo.index_ == sFieldName) { // (note: can use pointers here)
+							sQueryTerm.append(" OR (($manual_aliases").append("))");
+						}
+						else if (null != nonIndexField) {
+							sQueryTerm.append(" OR ").append(nonIndexField).append(":$manual_aliases");												
+						}
+						
+					}//TESTED (entity + association) - aliases #1
+					
+					// Recall: we're abusing linkdata to contain aliases:
+					if ((null != masterAlias.getSemanticLinks()) && !masterAlias.getSemanticLinks().isEmpty()) {
+						String nonIndexField = null;
+						if (AssociationPojo.geo_index_ != sFieldName) { // (geo has no non-indexed form)
+							nonIndexField = (AssociationPojo.entity1_index_ == sFieldName) ? AssociationPojo.entity1_ : AssociationPojo.entity2_;
+						}
+						
+						if (null == this._extraFullTextTerms) {
+							_extraFullTextTerms = new LinkedList<AdvancedQueryPojo.QueryTermPojo>();
+						}
+						for (String textAlias: masterAlias.getSemanticLinks()) {
+							if (EntityPojo.index_ == sFieldName) { // (note: can use pointers here)
+								AdvancedQueryPojo.QueryTermPojo qtExtra = new AdvancedQueryPojo.QueryTermPojo();
+								qtExtra.etext = textAlias;
+								_extraFullTextTerms.add(qtExtra);
+							}
+							else if (null != nonIndexField) {							
+								termQ = termBoolQ = termBoolQ.should(CrossVersionQueryBuilders.matchPhraseQuery(nonIndexField, textAlias));
+							}
+						}
+						if (EntityPojo.index_ == sFieldName) { // (note: can use pointers here)
+							sQueryTerm.append(" OR (($manual_text_aliases").append("))");
+						}
+						else if (null != nonIndexField) {
+							sQueryTerm.append(" OR ").append(nonIndexField).append(":$manual_text_aliases");												
+						}
+						
+					}//TESTED (entity + association) - aliases #2
+				}
+			}//TESTED (by hand) - alias lookups
 			
 			if (null == termQ) {
 				termQ = QueryBuilders.termQuery(sFieldName, qt.entity);				
 			}
 			
-		} //TESTED logic3*
+		} //TESTED logic3* - end if entity options (apart from sentiment, which is handled below)
 						
+		// Sentiment... only apply for entities (association sentiment is handled in parseAssociationTerm)
+		
+		if ((null != qt.sentiment) && (EntityPojo.index_ == sFieldName)) { // (note: can use pointers here)
+			RangeQueryBuilder sentimentQ = QueryBuilders.rangeQuery(EntityPojo.sentiment_);
+			if (null != qt.sentiment.min) {
+				sentimentQ.from(qt.sentiment.min);
+			}
+			if (null != qt.sentiment.max) {
+				sentimentQ.to(qt.sentiment.max);					
+			}
+			if (null == termQ) {
+				termQ = sentimentQ;
+				sQueryTerm.append("sentiment:[").append(qt.sentiment.min).append(',').append(qt.sentiment.max).append(']');
+			}
+			else {
+				termQ = QueryBuilders.boolQuery().must(termQ).must(sentimentQ);
+				sQueryTerm.append(" AND ").append("sentiment:[").append(qt.sentiment.min).append(',').append(qt.sentiment.max).append(']');
+					// (don't mind the nulls in the range)
+			}
+		}//TESTED (combined sentiment and standalone sentiment)
+		
 		return termQ;
 	}
 	
@@ -1122,7 +1432,9 @@ public class QueryHandler {
 			_allowedDatesArray = new String[]
 				{
 					"yyyy'-'DDD", "yyyy'-'MM'-'dd", "yyyyMMdd", "dd MMM yyyy", "dd MMM yy", 
-					"MM/dd/yy", "MM/dd/yyyy", "MM.dd.yy", "MM.dd.yyyy", "dd MMM yyyy hh:mm:ss",
+					"MM/dd/yy", "MM/dd/yyyy", "MM.dd.yy", "MM.dd.yyyy", 
+					"yyyy'-'MM'-'dd hh:mm:ss", "dd MMM yy hh:mm:ss", "dd MMM yyyy hh:mm:ss",
+					"MM/dd/yy hh:mm:ss", "MM/dd/yyyy hh:mm:ss", "MM.dd.yy hh:mm:ss", "MM.dd.yyyy hh:mm:ss",
 					 DateFormatUtils.ISO_DATE_FORMAT.getPattern(),
 					 DateFormatUtils.ISO_DATE_TIME_ZONE_FORMAT.getPattern(),
 					 DateFormatUtils.ISO_DATETIME_TIME_ZONE_FORMAT.getPattern(),
@@ -1142,55 +1454,55 @@ public class QueryHandler {
 	
 	// 1.2.3] Event term parsing - this one is pretty complex
 	
-	BaseQueryBuilder parseEventTerm(AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo event, StringBuffer sQueryTerm )
+	BaseQueryBuilder parseAssociationTerm(AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo assoc, AdvancedQueryPojo.QueryTermPojo.SentimentModifierPojo sentiment, StringBuffer sQueryTerm )
 	{
 		boolean bFirstTerm = true;
 		BoolQueryBuilder query = QueryBuilders.boolQuery();	
 		sQueryTerm.append("association:(");
 		int nTerms = 0;
 		
-		if (null != event.entity1) {
+		if (null != assoc.entity1) {
 			bFirstTerm = false;
 			sQueryTerm.append("(");			
-			this.parseEventSubTerm(event.entity1, sQueryTerm, query, AssociationPojo.entity1_, AssociationPojo.entity1_index_);
+			this.parseAssociationSubTerm(assoc.entity1, sQueryTerm, query, AssociationPojo.entity1_, AssociationPojo.entity1_index_);
 			sQueryTerm.append(')');
 			nTerms++;
 		}//TESTED
-		if (null != event.entity2) {
+		if (null != assoc.entity2) {
 			if (!bFirstTerm) {
 				sQueryTerm.append(" AND ");				
 			}
 			bFirstTerm = false;
 			sQueryTerm.append("(");
-			this.parseEventSubTerm(event.entity2, sQueryTerm, query, AssociationPojo.entity2_, AssociationPojo.entity2_index_);
+			this.parseAssociationSubTerm(assoc.entity2, sQueryTerm, query, AssociationPojo.entity2_, AssociationPojo.entity2_index_);
 			sQueryTerm.append(')');
 			nTerms++;
 		}//TESTED
-		if (null != event.verb) {
+		if (null != assoc.verb) {
 			if (!bFirstTerm) {
 				sQueryTerm.append(" AND ");				
 			}
 			bFirstTerm = false;
-			sQueryTerm.append("(verb,verb_category:").append(event.verb).append(")");
+			sQueryTerm.append("(verb,verb_category:").append(assoc.verb).append(")");
 			
-			query.must(QueryBuilders.boolQuery().should(QueryBuilders.queryString(event.verb).field(AssociationPojo.verb_)).
-													should(QueryBuilders.queryString(event.verb).field(AssociationPojo.verb_category_)));
+			query.must(QueryBuilders.boolQuery().should(QueryBuilders.queryString(assoc.verb).field(AssociationPojo.verb_)).
+													should(QueryBuilders.queryString(assoc.verb).field(AssociationPojo.verb_category_)));
 			
 			sQueryTerm.append(')');
 			nTerms++;
 		}//TESTED
-		if (null != event.geo) 
+		if (null != assoc.geo) 
 		{
 			if (!bFirstTerm) {
 				sQueryTerm.append(" AND ");				
 			}
 			bFirstTerm = false;
 			sQueryTerm.append("(");
-			query.must(this.parseGeoTerm(event.geo, sQueryTerm, GeoParseField.ASSOC));
+			query.must(this.parseGeoTerm(assoc.geo, sQueryTerm, GeoParseField.ASSOC));
 			sQueryTerm.append(')');
 			nTerms++;
 		}//TOTEST
-		if (null != event.time) 
+		if (null != assoc.time) 
 		{
 			if (!bFirstTerm) {
 				sQueryTerm.append(" AND ");				
@@ -1202,33 +1514,48 @@ public class QueryHandler {
 			// (Note time_start and time_end don't exist inside the document object)
 			StringBuffer sbDummy = new StringBuffer();
 			BoolQueryBuilder combo2 = QueryBuilders.boolQuery();
-			combo2.should(this.parseDateTerm(event.time, sQueryTerm, AssociationPojo.time_start_));
+			combo2.should(this.parseDateTerm(assoc.time, sQueryTerm, AssociationPojo.time_start_));
 			sQueryTerm.append(") OR/CONTAINS (");
-			combo2.should(this.parseDateTerm(event.time, sQueryTerm, AssociationPojo.time_end_));
+			combo2.should(this.parseDateTerm(assoc.time, sQueryTerm, AssociationPojo.time_end_));
 			// (complex bit, start must be < and end must be >)
 			BoolQueryBuilder combo3 = QueryBuilders.boolQuery();
 			AdvancedQueryPojo.QueryTermPojo.TimeTermPojo event1 = new AdvancedQueryPojo.QueryTermPojo.TimeTermPojo();
 			AdvancedQueryPojo.QueryTermPojo.TimeTermPojo event2 = new AdvancedQueryPojo.QueryTermPojo.TimeTermPojo();
 			sQueryTerm.append("))");
 			event1.min = "0";
-			event1.max = event.time.min;
-			event1.min = event.time.max;
+			event1.max = assoc.time.min;
+			event1.min = assoc.time.max;
 			event1.max = "999900"; // (ie the end of time, sort of!)
 			combo3.must(this.parseDateTerm(event1, sbDummy, AssociationPojo.time_start_));
 			combo3.must(this.parseDateTerm(event2, sbDummy, AssociationPojo.time_end_));
 			query.must(combo2).must(combo3);
 			nTerms++;
 		}//TOTEST
-		if (null != event.type) {
+		if (null != assoc.type) {
 			if (!bFirstTerm) {
 				sQueryTerm.append(" AND ");				
 			}
 			bFirstTerm = false;
-			sQueryTerm.append("(event_type:").append(event.type).append(")");
-			query.must(QueryBuilders.termQuery(AssociationPojo.assoc_type_, event.type));
+			sQueryTerm.append("(event_type:").append(assoc.type).append(")");
+			query.must(QueryBuilders.termQuery(AssociationPojo.assoc_type_, assoc.type));
 			sQueryTerm.append(')');
 			nTerms++;
 		}//TOTEST
+		if (null != sentiment) {
+			if (!bFirstTerm) {
+				sQueryTerm.append(" AND ");				
+			}			
+			bFirstTerm = false;
+			RangeQueryBuilder sentimentQ = QueryBuilders.rangeQuery(AssociationPojo.sentiment_);			
+			if (null != sentiment.min) {
+				sentimentQ.from(sentiment.min);
+			}
+			if (null != sentiment.max) {
+				sentimentQ.to(sentiment.max);					
+			}
+			query.must(sentimentQ);
+			sQueryTerm.append("sentiment:[").append(sentiment.min).append(',').append(sentiment.max).append(']');
+		}//TOTEST (combined sentiment only)
 		sQueryTerm.append(')');
 
 		return query;
@@ -1236,7 +1563,7 @@ public class QueryHandler {
 	} //TESTED/TOTEST (see above)
 	
 	// 1.2.3.2] Event term parsing utility
-	void parseEventSubTerm(AdvancedQueryPojo.QueryTermPojo entity, StringBuffer sQueryTerm, BoolQueryBuilder combo, 
+	void parseAssociationSubTerm(AdvancedQueryPojo.QueryTermPojo entity, StringBuffer sQueryTerm, BoolQueryBuilder combo, 
 			String sFieldName, String sIndexName)
 	{
 		boolean bFirstTerm = true;
@@ -1255,7 +1582,7 @@ public class QueryHandler {
 			sQueryTerm.append("(\""); 
 			sQueryTerm.append(entity.etext);			
 			sQueryTerm.append("\")");
-			combo.must(QueryBuilders.textPhraseQuery(sFieldName, entity.etext));
+			combo.must(CrossVersionQueryBuilders.matchPhraseQuery(sFieldName, entity.etext));
 		}
 		if ((null != entity.ftext) && (!entity.ftext.isEmpty())) { //3
 			if (!bFirstTerm) {
@@ -1422,37 +1749,30 @@ public class QueryHandler {
 // 2] Complex scoring	
 
 	// 2.1] Proximity adjustments
-	private static BaseQueryBuilder addProximityBasedScoring(BaseQueryBuilder currQuery, SearchRequestBuilder searchSettings, AdvancedQueryPojo.QueryScorePojo scoreParams)
+	private static BaseQueryBuilder addProximityBasedScoring(BaseQueryBuilder currQuery, SearchRequestBuilder searchSettings, 
+										AdvancedQueryPojo.QueryScorePojo scoreParams,
+										BoolFilterBuilder parentFilterObj, boolean bLowAccuracyGeo)
 	{
 		Map<String, Object> params = new HashMap<String, Object>();
 		Object[] paramDoublesScript = new Object[6];
 		Object[] paramDoublesDecay = new Object[6];
-		//Geo decay portion
-		if ((null != scoreParams.geoProx) && (null != scoreParams.geoProx.ll) && (null != scoreParams.geoProx.decay) &&  
-				!scoreParams.geoProx.ll.equals(",") && !scoreParams.geoProx.ll.isEmpty() && !scoreParams.geoProx.decay.isEmpty()) 
-		{			
-			if ('(' == scoreParams.geoProx.ll.charAt(0)) 
-			{
-				scoreParams.geoProx.ll = scoreParams.geoProx.ll.substring(1, scoreParams.geoProx.ll.length() - 1);
-			}
-			String[] latlon = scoreParams.geoProx.ll.split("\\s*,\\s*");
-			if (2 == latlon.length) 
-			{
-				double dlat = Double.parseDouble(latlon[0]);
-				double dlon = Double.parseDouble(latlon[1]);
-				double dDist = getDistance(scoreParams.geoProx.decay); // (Returns it in km)
-				if (0.0 == dDist) dDist = 0.00001; // (robustness, whatever)
-				paramDoublesScript[0] = (1.0/dDist);
-				paramDoublesScript[1] = dlat;
-				paramDoublesScript[2] = dlon;
-				paramDoublesDecay[0] = (1.0/dDist);
-				paramDoublesDecay[1] = dlat;
-				paramDoublesDecay[2] = dlon;
-			}
+		double[] geoDecay = parseGeoDecay(scoreParams); // (encapsulate this away since it can also be called by ScoringUtils)
+		if ((null != geoDecay) && !bLowAccuracyGeo) {
+			double dlat = geoDecay[0];
+			double dlon = geoDecay[1];
+			double dInvDist = geoDecay[2];
+			paramDoublesScript[0] = dInvDist;
+			paramDoublesScript[1] = dlat;
+			paramDoublesScript[2] = dlon;
+			paramDoublesDecay[0] = dInvDist;
+			paramDoublesDecay[1] = dlat;
+			paramDoublesDecay[2] = dlon;
 		}
-		else // geo prox not specified
+		else // geo prox not specified/malformed, or low accuracy
 		{
-			scoreParams.geoProx = null;
+			if (!bLowAccuracyGeo) {
+				scoreParams.geoProx = null;
+			}
 			paramDoublesScript[0] = -1.0;
 			paramDoublesScript[1] = -1.0;
 			paramDoublesScript[2] = -1.0;
@@ -1460,6 +1780,15 @@ public class QueryHandler {
 			paramDoublesDecay[1] = -1.0;
 			paramDoublesDecay[2] = -1.0;
 		}
+		if ((null != geoDecay) && (null != parentFilterObj)) { // Regardless of high/low accuracy, add 0.5% filter
+			
+			GeoDistanceFilterBuilder geoFilter = FilterBuilders.geoDistanceFilter(EntityPojo.geotag_).
+													point(geoDecay[0], geoDecay[1]).distance(200.0/geoDecay[2], DistanceUnit.KILOMETERS);
+			
+			parentFilterObj.must(FilterBuilders.nestedFilter(DocumentPojo.entities_, geoFilter));
+			
+		}//TESTED
+		
 		//Time decay portion
 		if ((null != scoreParams.timeProx) && (null != scoreParams.timeProx.time) && (null != scoreParams.timeProx.decay) &&  
 				!scoreParams.timeProx.time.isEmpty() && !scoreParams.timeProx.decay.isEmpty()) 
@@ -1476,6 +1805,15 @@ public class QueryHandler {
 			
 			scoreParams.timeProx.nTime = nDecayCenter;
 			scoreParams.timeProx.dInvDecay = dInvDecay;
+			
+			// Add 0.5% filter
+			if (null != parentFilterObj) {
+				
+				long nMinTime = nDecayCenter - 200*nDecayTime;
+				long nMaxTime = nDecayCenter + 200*nDecayTime;
+				parentFilterObj.must(FilterBuilders.numericRangeFilter(DocumentPojo.publishedDate_).from(nMinTime).to(nMaxTime));				
+				
+			}//TESTED
 			
 			paramDoublesScript[3] = dInvDecay;
 			paramDoublesScript[4] = nDecayCenter;		
@@ -1511,6 +1849,35 @@ public class QueryHandler {
 			return QueryBuilders.customScoreQuery(currQuery).script(QueryDecayFactory.getScriptName()).params(params).lang(QueryDecayFactory.getLanguage());
 		} 	
 	}//TESTED
+	
+	// Utility to parse out geo for "software emulated case"
+	// returns lat/lon/distance (or null if anything goes wrong)
+	// Also called from ScoringUtils
+
+	public static double[] parseGeoDecay(AdvancedQueryPojo.QueryScorePojo scoreParams) {
+		//Geo decay portion
+		if ((null != scoreParams.geoProx) && (null != scoreParams.geoProx.ll) && (null != scoreParams.geoProx.decay) &&  
+				!scoreParams.geoProx.ll.equals(",") && !scoreParams.geoProx.ll.isEmpty() && !scoreParams.geoProx.decay.isEmpty()) 
+		{			
+			if ('(' == scoreParams.geoProx.ll.charAt(0)) 
+			{
+				scoreParams.geoProx.ll = scoreParams.geoProx.ll.substring(1, scoreParams.geoProx.ll.length() - 1);
+			}
+			String[] latlon = scoreParams.geoProx.ll.split("\\s*,\\s*");
+			if (2 == latlon.length) 
+			{
+				double[] lat_lon_invdist = new double[3];
+				lat_lon_invdist[0] = Double.parseDouble(latlon[0]);
+				lat_lon_invdist[1] = Double.parseDouble(latlon[1]);
+				double dDist = getDistance(scoreParams.geoProx.decay); // (Returns it in km)
+				if (0.0 == dDist) dDist = 0.00001; // (robustness, whatever)
+				lat_lon_invdist[2] = (1.0/dDist); 
+
+				return lat_lon_invdist;
+			}
+		}
+		return null;		
+	}
 	
 	// Utility to get the ms count of an interval
 	
@@ -1573,6 +1940,73 @@ public class QueryHandler {
 		}		
 		return dDist;
 	}//TESTED
+
+	////////////////////////////////////////////////////////////////////////
+	
+	// 2.2] Manual weighting
+	
+	private BaseQueryBuilder applyManualWeights(BaseQueryBuilder queryObj, AdvancedQueryPojo.QueryScorePojo score)
+	{
+		if ((null != score.tagWeights) || (null != score.typeWeights) || (null != score.sourceWeights)) {
+			CustomFiltersScoreQueryBuilder manualWeights = QueryBuilders.customFiltersScoreQuery(queryObj);
+			manualWeights.scoreMode("avg"); // Only tags can match multiple filters, in which case we average them
+			
+			if (null != score.sourceWeights) {
+				// Find all weightings with the same score:
+				ArrayListMultimap<Float, String> invSourceWeights = ArrayListMultimap.create();
+				for (Map.Entry<String, Double> sourceKeyEl: score.sourceWeights.entrySet()) {
+					invSourceWeights.put((float)(double)sourceKeyEl.getValue(), sourceKeyEl.getKey());
+				}
+				for (Map.Entry<Float, Collection<String>> invSourceKeyEl: invSourceWeights.asMap().entrySet()) {
+					manualWeights.add(FilterBuilders.termsFilter(DocumentPojo.sourceKey_, invSourceKeyEl.getValue().toArray()), invSourceKeyEl.getKey());
+				}
+			}//TESTED
+			if (null != score.typeWeights) {
+				// Find all weightings with the same score:
+				ArrayListMultimap<Float, String> invTypeWeights = ArrayListMultimap.create();
+				for (Map.Entry<String, Double> typeEl: score.typeWeights.entrySet()) {
+					invTypeWeights.put((float)(double)typeEl.getValue(), typeEl.getKey());
+				}
+				for (Map.Entry<Float, Collection<String>> invTypeEl: invTypeWeights.asMap().entrySet()) {
+					if (null == score.sourceWeights) { // Easy case
+						manualWeights.add(FilterBuilders.termsFilter(DocumentPojo.mediaType_, invTypeEl.getValue().toArray()), invTypeEl.getKey());
+					}
+					else { // Need to filter out sources they are matched with higher prio
+						BoolFilterBuilder typesNotSources = FilterBuilders.boolFilter();
+						typesNotSources = typesNotSources.must(FilterBuilders.termsFilter(DocumentPojo.mediaType_, invTypeEl.getValue().toArray())).
+															mustNot(FilterBuilders.termsFilter(DocumentPojo.sourceKey_, score.sourceWeights.keySet().toArray()));
+						
+						manualWeights.add(typesNotSources, invTypeEl.getKey());
+					}
+				}
+			}//TESTED
+			if (null != score.tagWeights) { 
+				// Find all weightings with the same score:
+				ArrayListMultimap<Float, String> invTagWeights = ArrayListMultimap.create();
+				for (Map.Entry<String, Double> tagEl: score.tagWeights.entrySet()) {
+					invTagWeights.put((float)(double)tagEl.getValue(), tagEl.getKey());
+				}
+				for (Map.Entry<Float, Collection<String>> invTagEl: invTagWeights.asMap().entrySet()) {
+					if ((null == score.sourceWeights) && (null == score.typeWeights)) { // Easy case
+						manualWeights.add(FilterBuilders.termsFilter(DocumentPojo.tags_, invTagEl.getValue().toArray()), invTagEl.getKey());
+					}
+					else { // need to exclude types or sources
+						BoolFilterBuilder typesNotSources = FilterBuilders.boolFilter();
+						BoolFilterBuilder tagsAndNothingElse = typesNotSources.must(FilterBuilders.termsFilter(DocumentPojo.tags_, invTagEl.getValue().toArray()));
+						if (null != score.sourceWeights) {
+							tagsAndNothingElse = tagsAndNothingElse.mustNot(FilterBuilders.termsFilter(DocumentPojo.sourceKey_, score.sourceWeights.keySet().toArray()));
+						}
+						if (null != score.typeWeights) {
+							tagsAndNothingElse = tagsAndNothingElse.mustNot(FilterBuilders.termsFilter(DocumentPojo.mediaType_, score.typeWeights.keySet().toArray()));
+						}
+						manualWeights.add(tagsAndNothingElse, invTagEl.getKey());
+					}
+				}
+			}//TESTED
+			queryObj = manualWeights;
+		}
+		return queryObj;
+	}//TESTED
 	
 ////////////////////////////////////////////////////////////////////////
 	
@@ -1584,7 +2018,7 @@ public class QueryHandler {
 		
 // 4] Query management
 	
-	private DBCursor getDocIds(DBCollection docDb, ObjectId[] ids, int nFromServerLimit)	
+	private DBCursor getDocIds(DBCollection docDb, ObjectId[] ids, int nFromServerLimit, AdvancedQueryPojo.QueryOutputPojo output, AdvancedQueryPojo.QueryScorePojo score)	
 	{
 		DBCursor docdCursor = null;
 		try {
@@ -1592,9 +2026,38 @@ public class QueryHandler {
 			BasicDBObject query = new BasicDBObject();
 			query.put("_id", new BasicDBObject("$in", ids));
 			BasicDBObject fields = new BasicDBObject(); // (used to discard community ids -plus legacy versions-, now need it)
+			if (!output.docs.metadata) {
+				fields.put(DocumentPojo.metadata_, 0);
+			}
+			boolean bNotAggEnts = ((output.aggregation == null) || (output.aggregation.entsNumReturn == null) || (output.aggregation.entsNumReturn == 0));
+			if (bNotAggEnts && (null != score) && (null != score.sigWeight) && (score.sigWeight > 0.0)) {
+				bNotAggEnts = false; // (special case, use agg entities to score docs)
+			}
+			if (!output.docs.ents && bNotAggEnts) {
+				fields.put(DocumentPojo.entities_, 0);				
+			}
+			boolean bNotAggEvents = ((output.aggregation == null) || (output.aggregation.eventsNumReturn == null) || (output.aggregation.eventsNumReturn == 0));
+			boolean bNotAggFacts = ((output.aggregation == null) || (output.aggregation.factsNumReturn == null) || (output.aggregation.factsNumReturn == 0));
+			boolean bNoStandaloneEvents = (null == output.docs.eventsTimeline) || (null == output.docs.numEventsTimelineReturn) || (output.docs.numEventsTimelineReturn == 0);
+			if (!output.docs.events && !output.docs.facts && !output.docs.summaries && bNoStandaloneEvents && bNotAggEvents && bNotAggFacts) {
+				fields.put(DocumentPojo.associations_, 0);
+			}
+			//TESTED
 			
 			//cm = new CollectionManager();
-			docdCursor = docDb.find(query, fields).batchSize(nFromServerLimit);
+			boolean bPrimary = true;
+			
+			if (_replicaSetDistributionRatio > 0) {
+				if (0 != (new Date().getTime() % _replicaSetDistributionRatio)) {
+					bPrimary = false;
+				}
+			}			
+			if (bPrimary) { // Get from the primary
+				docdCursor = docDb.find(query, fields).batchSize(nFromServerLimit);				
+			}
+			else { // Try and get from the secondary if possible
+				docdCursor = docDb.find(query, fields).batchSize(nFromServerLimit).setReadPreference(ReadPreference.secondaryPreferred());
+			}
 			
 		} catch (Exception e) {
 			// If an exception occurs log the error
@@ -1602,6 +2065,30 @@ public class QueryHandler {
 		}
 		return docdCursor;
 	}		
+	
+	//___________________________________________________________________________________
+
+	// Utility function: create a populated query object (by defaults if necessary)
+	
+	public static AdvancedQueryPojo createQueryPojo(String queryJson) {
+		GsonBuilder gb = AdvancedQueryPojo.getDefaultBuilder();
+		gb.registerTypeAdapter(AdvancedQueryPojo.QueryRawPojo.class, new AdvancedQueryPojo.QueryRawPojo.Deserializer());
+		AdvancedQueryPojo query = gb.create().fromJson(queryJson, AdvancedQueryPojo.class);
+		// Fill in the blanks (a decent attempt has been made to fill out the blanks inside these options)
+		if (null == query.input) {
+			query.input = new AdvancedQueryPojo.QueryInputPojo();				
+		}
+		if (null == query.score) {
+			query.score = new AdvancedQueryPojo.QueryScorePojo();				
+		}
+		if (null == query.output) {
+			query.output = new AdvancedQueryPojo.QueryOutputPojo();
+		}		
+		if (null == query.output.docs) { // (Docs are sufficiently important we'll make sure they're always present)
+			query.output.docs = new AdvancedQueryPojo.QueryOutputPojo.DocumentOutputPojo();
+		}
+		return query;
+	}//TESTED
 	
 ////////////////////////////////////////////////////////////////////////
 	
@@ -2084,13 +2571,13 @@ public class QueryHandler {
 		AdvancedQueryPojo.QueryScorePojo scoreParams = new AdvancedQueryPojo.QueryScorePojo();		
 		// Can't unit test this properly, so just rely on the "TEST CODE"
 		//NO PROXIMITY SCORING
-		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams);
+		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams, null, false);
 		
 		// Geo only:
 		scoreParams.geoProx = new AdvancedQueryPojo.QueryScorePojo.GeoProxTermPojo();
 		scoreParams.geoProx.ll = "10.0,20.0";
 		scoreParams.geoProx.decay = "100km";
-		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams);
+		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams, null, false);
 		
 		// Geo+time:
 		scoreParams.geoProx.ll = "(10.0,20.0)"; // (double check this version works)
@@ -2098,41 +2585,18 @@ public class QueryHandler {
 		scoreParams.timeProx = new AdvancedQueryPojo.QueryScorePojo.TimeProxTermPojo();
 		scoreParams.timeProx.decay = "month";
 		scoreParams.timeProx.time = "2000-01-01";
-		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams);
+		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams, null, false);
 		
 		// Time only:
 		scoreParams.geoProx = null;
 		scoreParams.timeProx.decay = "1m";
-		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams);		
+		addProximityBasedScoring(QueryBuilders.matchAllQuery(), null, scoreParams, null, false);		
 	}
 	
 	public enum GeoParseField
 	{
 		ALL,ASSOC,DOC,ENT;
 	}
-	//___________________________________________________________________________________
-
-	// Utility function: create a populated query object (by defaults if necessary)
-	
-	public static AdvancedQueryPojo createQueryPojo(String queryJson) {
-		GsonBuilder gb = new GsonBuilder();
-		gb.registerTypeAdapter(AdvancedQueryPojo.QueryRawPojo.class, new AdvancedQueryPojo.QueryRawPojo.Deserializer());
-		AdvancedQueryPojo query = gb.create().fromJson(queryJson, AdvancedQueryPojo.class);
-		// Fill in the blanks (a decent attempt has been made to fill out the blanks inside these options)
-		if (null == query.input) {
-			query.input = new AdvancedQueryPojo.QueryInputPojo();				
-		}
-		if (null == query.score) {
-			query.score = new AdvancedQueryPojo.QueryScorePojo();				
-		}
-		if (null == query.output) {
-			query.output = new AdvancedQueryPojo.QueryOutputPojo();
-		}		
-		if (null == query.output.docs) { // (Docs are sufficiently important we'll make sure they're always present)
-			query.output.docs = new AdvancedQueryPojo.QueryOutputPojo.DocumentOutputPojo();
-		}
-		return query;
-	}//TESTED
 	
 }
 

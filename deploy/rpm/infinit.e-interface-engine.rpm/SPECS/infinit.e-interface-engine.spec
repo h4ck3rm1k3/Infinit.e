@@ -6,7 +6,7 @@ Summary: Infinit.e search engine REST API
 Name: infinit.e-interface-engine
 Version: INFINITE_VERSION
 Release: INFINITE_RELEASE
-Requires: tomcat6, infinit.e-config, infinit.e-index-engine
+Requires: tomcat6, infinit.e-config, infinit.e-index-engine, elasticsearch >= 0.18.7-9
 License: None
 Group: Infinit.e
 BuildArch: noarch
@@ -131,6 +131,7 @@ Infinit.e search engine REST API
 %defattr(-,tomcat,tomcat)
 %config %attr(755,root,root) /etc/init.d/tomcat6-interface-engine
 %dir /mnt/opt/tomcat-infinite/
+%config %attr(755,root,root) /mnt/opt/tomcat-infinite/tomcat6
 %dir /mnt/opt/tomcat-infinite/interface-engine
 %dir /mnt/opt/tomcat-infinite/interface-engine/conf
 %dir /mnt/opt/tomcat-infinite/interface-engine/logs

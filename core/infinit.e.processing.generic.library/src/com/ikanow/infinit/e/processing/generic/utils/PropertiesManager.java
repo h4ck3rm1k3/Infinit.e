@@ -101,6 +101,30 @@ public class PropertiesManager {
 		}
 	}
 	
+	/** 
+	  * Additional content:
+	  */
+	public boolean storeRawContent() {
+		String s = this.getProperty("store.rawcontent");
+		try {
+			return Boolean.parseBoolean(s);
+		}
+		catch (Exception e) {
+			return false;
+		}		
+	}
+
+	public boolean storeMetadataAsContent() {
+		String s = this.getProperty("store.metadata_as_content");
+		try {
+			return Boolean.parseBoolean(s);
+		}
+		catch (Exception e) {
+			return false;
+		}		
+	}
+	
+	
 	// Get preferred (max) index replicas
 	
 	public int getMaxIndexReplicas() {
@@ -124,6 +148,36 @@ public class PropertiesManager {
 			return false;
 		}
 		else if (s.equals("1") || s.equalsIgnoreCase("true")) {
+			return true;
+		}
+		return false;
+	}
+
+	// If aggregation enabled, normally will run in a background thread with a 50% duty cycle
+	// set this to <0 to run synchronously in harvest (legacy code), or 0<.<=1 otherwise, (0 just doesn't aggreagate on-the-fly)
+	
+	public double getHarvestAggregationDutyCycle() {
+		String s = this.getProperty("harvest.aggregation.duty_cycle");
+		if (null == s) { // Once this has had a chance to be proven we'll enable it by default
+			return 0.5;
+		}
+		return Double.parseDouble(s);
+	}
+	
+	/**
+	 * Checks if icu_normalization should be active for community ES index
+	 * 
+	 * @return false if turned off, true otherwise
+	 */
+	public boolean getNormalizeEncoding() 
+	{
+		String s = this.getProperty("store.normalize_encoding");
+		if (null == s) 
+		{
+			return true;
+		}
+		else if (s.equals("1") || s.equalsIgnoreCase("true")) 
+		{
 			return true;
 		}
 		return false;

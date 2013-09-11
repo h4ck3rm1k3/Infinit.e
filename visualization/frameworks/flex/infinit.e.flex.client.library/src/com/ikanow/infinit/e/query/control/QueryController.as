@@ -25,8 +25,11 @@ package com.ikanow.infinit.e.query.control
 	import com.ikanow.infinit.e.shared.model.vo.QuerySuggestions;
 	import com.ikanow.infinit.e.shared.model.vo.ui.ServiceResult;
 	import com.ikanow.infinit.e.shared.model.vo.ui.ServiceStatistics;
+	import com.ikanow.infinit.e.shared.util.JSONUtil;
 	import flash.utils.setTimeout;
 	import mx.collections.ArrayCollection;
+	import mx.controls.Alert;
+	import mx.resources.ResourceManager;
 	import mx.rpc.events.FaultEvent;
 	import mx.rpc.events.ResultEvent;
 	
@@ -208,7 +211,23 @@ package com.ikanow.infinit.e.query.control
 		 */
 		public function guery( event:QueryEvent ):void
 		{
-			executeServiceCall( "QueryController.guery()", event, queryServiceDelegate.query( event ), guery_resultHandler, defaultFaultHandler );
+			if ( event.communityids == null || event.communityids == "" )
+			{
+				Alert.show( "Error: No communities selected, please open the Source Manager and choose a community to search in" );
+			}
+			else
+			{
+				executeServiceCall( "QueryController.guery()", event, queryServiceDelegate.query( event ), guery_resultHandler, guery_faultHandler );
+			}
+		}
+		
+		/**
+		 * Fault handler for query
+		 * @param event
+		 **/
+		public function guery_faultHandler( event:FaultEvent ):void
+		{
+			Alert.show( "Query Error: refreshing on the SourceManager window can fix this issue sometimes.\n\n" + ResourceManager.getInstance().getString( 'infinite', 'infiniteController.serverErrorMessage', [ event.fault.rootCause.text ] ), ResourceManager.getInstance().getString( 'infinite', 'infiniteController.serverError' ) );
 		}
 		
 		/**
@@ -284,6 +303,16 @@ package com.ikanow.infinit.e.query.control
 			queryManager.tryGetQuerySuggestions( event.searchType, event.keywordString, event.keywordString2 );
 		}
 		
+		[EventHandler( event = "QueryEvent.UPDATE_QUERY_FROM_WIDGET_DRAGDROP" )]
+		/**
+		 * Updates the query logic string to be used in a query
+		 * @param event
+		 */
+		public function updateQuery( event:QueryEvent ):void
+		{
+			queryManager.updateQueryFromWidgetDragDrop( event.widgetInfo );
+		}
+		
 		[EventHandler( event = "QueryEvent.UPDATE_QUERY_NAVIGATE" )]
 		/**
 		 * Saves the query advanced scoring settings, navigates to a new page
@@ -292,7 +321,7 @@ package com.ikanow.infinit.e.query.control
 		public function updateQueryAndNavigate( event:QueryEvent ):void
 		{
 			var queryString:QueryString = event.queryString as QueryString;
-			queryBuilderModel.addQueryTermsToQuery( queryString.qt );
+			queryBuilderModel.addQueryTermsToQuery( queryString.qt, ( event.widgetInfo != null ) ); // if widget info is non null then group... 
 			queryManager.updateQueryAndNavigate( queryString, event.searchType );
 		}
 		[EventHandler( event = "QueryEvent.UPDATE_QUERY_LOGIC" )]
@@ -304,6 +333,7 @@ package com.ikanow.infinit.e.query.control
 		{
 			queryManager.setQueryLogic( event.queryLogic );
 		}
+		
 		
 		[EventHandler( event = "QueryEvent.UPDATE_QUERY_TERM" )]
 		/**

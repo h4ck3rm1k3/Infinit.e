@@ -1,15 +1,15 @@
 /*******************************************************************************
  * Copyright 2012, The Infinit.e Open Source Project.
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License, version 3,
  * as published by the Free Software Foundation.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
@@ -31,6 +31,7 @@ package com.ikanow.infinit.e.shared.util
 	import com.ikanow.infinit.e.shared.model.vo.Community;
 	import com.ikanow.infinit.e.shared.model.vo.QueryObject;
 	import com.ikanow.infinit.e.shared.model.vo.QueryOutputAggregationOptions;
+	import com.ikanow.infinit.e.shared.model.vo.QueryScoreOptions;
 	import com.ikanow.infinit.e.shared.model.vo.QueryString;
 	import com.ikanow.infinit.e.shared.model.vo.QueryStringRequest;
 	import com.ikanow.infinit.e.shared.model.vo.QuerySuggestion;
@@ -305,6 +306,73 @@ package com.ikanow.infinit.e.shared.util
 			return queryStringObject;
 		}
 		
+		public static function getQueryStringSettingsSummary( queryString:QueryString ):String
+		{
+			var querySummary:String = "";
+			
+			if ( null != queryString.score )
+			{
+				if ( null != queryString.score.geoProx )
+				{
+					if ( ( null != queryString.score.geoProx.decay ) && ( null != queryString.score.geoProx.ll ) )
+					{
+						if ( ( queryString.score.geoProx.decay.length > 0 ) && ( queryString.score.geoProx.ll.length > 1 ) )
+						{
+							if ( querySummary.length > 0 )
+								querySummary += " | ";
+							querySummary += "geo";
+						}
+					}
+				}
+				
+				if ( null != queryString.score.timeProx )
+				{
+					if ( ( null != queryString.score.timeProx.time ) && ( null != queryString.score.timeProx.decay ) )
+					{
+						if ( ( queryString.score.timeProx.time.length > 0 ) && ( queryString.score.timeProx.decay.length > 0 ) )
+						{
+							if ( querySummary.length > 0 )
+								querySummary += " | ";
+							
+							if ( queryString.score.timeProx.time == "now" )
+							{
+								querySummary += "recent";
+							}
+							else
+							{
+								querySummary += "time";
+							}
+						}
+					}
+				}
+				
+				if ( ( null != queryString.score.sourceWeights ) || ( null != queryString.score.tagWeights ) || ( null != queryString.score.typeWeights ) )
+				{
+					if ( querySummary.length > 0 )
+						querySummary += " | ";
+					querySummary += "source";
+				}
+			}
+			
+			if ( null != queryString.output )
+			{
+				if ( null != queryString.output.filter )
+				{
+					if ( ( null != queryString.output.filter.assocVerbs ) || ( null != queryString.output.filter.entityTypes ) )
+					{
+						if ( querySummary.length > 0 )
+							querySummary += " | ";
+						querySummary += "filter";
+					}
+				}
+			}
+			
+			if ( 0 == querySummary.length )
+				querySummary = null;
+			
+			return querySummary;
+		}
+		
 		/**
 		 * Gets an query string summary
 		 */
@@ -543,6 +611,10 @@ package com.ikanow.infinit.e.shared.util
 						break;
 					case QueryTermTypes.ENTITY:
 						qo[ QueryTermTypes.ENTITY ] = queryTerm.entity;
+						if ( null != queryTerm.sentiment )
+						{
+							qo[ QueryTermTypes.SENTIMENT ] = queryTerm.sentiment;
+						}
 						break;
 					case QueryTermTypes.EVENT:
 						qo[ QueryTermTypes.EVENT ] = getQueryTermEventObject( queryTerm.event );
@@ -721,6 +793,44 @@ package com.ikanow.infinit.e.shared.util
 			options.aggregateSourceMetadata = optionsRaw.hasOwnProperty( QueryConstants.SOURCE_METADATA );
 			options.aggregateSources = optionsRaw.hasOwnProperty( QueryConstants.SOURCES );
 			options.aggregateTimes = optionsRaw.hasOwnProperty( QueryConstants.TIMES_INTERVAL );
+			
+			return options;
+		}
+		
+		/**
+		 * Updates the scoring options based on the values returned in the query string raw object
+		 */
+		public static function setScoringOptions( options:QueryScoreOptions, optionsRaw:Object ):QueryScoreOptions
+		{
+			// 1] enableScoring vs relWeight/sigWeight
+			if ( optionsRaw.hasOwnProperty( QueryConstants.REL_WEIGHT ) && ( options.sigWeight == 0 ) )
+			{
+				var relWeight:int = optionsRaw[ QueryConstants.REL_WEIGHT ] as int;
+				
+				if ( relWeight == 0 )
+				{
+					options.disableScoring();
+				}
+			}
+			
+			// 2] adjustAggregateSig
+			if ( !optionsRaw.hasOwnProperty( QueryConstants.ADJUST_AGGREGATE_SIG ) || ( null == optionsRaw[ QueryConstants.ADJUST_AGGREGATE_SIG ] ) )
+			{
+				options.adjustAggregateSig = 0; // auto
+			}
+			else
+			{
+				var tmp:Boolean = optionsRaw[ QueryConstants.ADJUST_AGGREGATE_SIG ] as Boolean;
+				
+				if ( tmp )
+				{
+					options.adjustAggregateSig = 1; // always
+				}
+				else
+				{
+					options.adjustAggregateSig = 2; // never
+				}
+			}
 			
 			return options;
 		}

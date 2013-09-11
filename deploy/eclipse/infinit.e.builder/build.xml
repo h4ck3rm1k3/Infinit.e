@@ -25,6 +25,11 @@
 		<fileset dir="${rpm}" includes="**/*"/>
 	</move>
 	
+	<!-- Link elasticsearch to the current highest version -->
+	<move todir="${basedir}/../infinit.e.elasticsearch.driver">
+	    <fileset dir="${basedir}/../infinit.e.elasticsearch.driver_0.19"/>
+	</move>
+	    	
 	<!-- All the dir paths -->
 	<property name="infinit.e.data_model.location" value="${basedir}/../infinit.e.data_model"/>
 	<property name="infinit.e.harvest.library.location" value="${basedir}/../infinit.e.harvest.library"/>
@@ -33,17 +38,20 @@
 	<property name="infinit.e.api.server.location" value="${basedir}/../infinit.e.api.server"/>
 	<property name="infinit.e.core.server.location" value="${basedir}/../infinit.e.core.server"/>
 	<property name="infinit.e.mongo-indexer.location" value="${basedir}/../infinit.e.mongo-indexer"/>
+	<property name="infinit.e.hadoop.prototyping_engine.location" value="${basedir}/../infinit.e.hadoop.prototyping_engine"/>
 	
 	<property name="infinit.e.flex.location" value="${basedir}/../infinit.e.flex.client"/>
 	<property name="InfiniteDocBrowserWidget.location" value="${basedir}/../InfiniteDocBrowserWidget"/>
 	<property name="InfiniteEventGraphWidget.location" value="${basedir}/../InfiniteEventGraphWidget"/>
 	<property name="InfiniteMapQuestWidget.location" value="${basedir}/../InfiniteMapQuestWidget"/>
+	<property name="InfiniteQueryMetricsWidget.location" value="${basedir}/../InfiniteQueryMetricsWidget"/>
 	<property name="InfiniteSentimentWidget.location" value="${basedir}/../InfiniteSentimentWidget"/>
 	<property name="InfiniteSignificanceWidget.location" value="${basedir}/../InfiniteSignificanceWidget"/>
 	<property name="InfiniteTimelineEventWidget.location" value="${basedir}/../InfiniteTimelineEventWidget"/>
 	<property name="InfiniteTimelineWidget.location" value="${basedir}/../InfiniteTimelineWidget"/>
 	<property name="InfiniteSourceMonitor.location" value="${basedir}/../InfiniteSourceMonitor"/>
 	<property name="InfiniteEntityProfiler.location" value="${basedir}/../InfiniteEntityProfiler"/>
+	<property name="chrome.extension.source-updater.location" value="${basedir}/../chrome.extension.source-updater"/>
 	<property name="infinit.e.web.location" value="${basedir}/../infinit.e.web"/>
 	<property name="Infinit.e.Manager.location" value="${basedir}/../Infinit.e.Manager"/>
 	<property name="infinit.e-config.rpm.location" value="${basedir}/../infinit.e-config.rpm"/>
@@ -67,17 +75,25 @@
 		<ant antfile="${infinit.e.processing.generic.library.location}/build.xml">
 			<property name="basedir" value="${infinit.e.processing.generic.library.location}"/>
 		</ant>
+		<ant antfile="${infinit.e.api.server.location}/build.xml" target="jar">
+		    <!-- First call: just builds the query library JAR (do this to avoid circular deps vs custom library)  -->
+			<property name="basedir" value="${infinit.e.api.server.location}"/>
+		</ant>
 		<ant antfile="${infinit.e.processing.custom.library.location}/build.xml">
 			<property name="basedir" value="${infinit.e.processing.custom.library.location}"/>
 		</ant>
 		<ant antfile="${infinit.e.api.server.location}/build.xml">
-			<property name="basedir" value="${infinit.e.api.server.location}"/>
+		    <!-- Second call: builds WAR and es JAR (do this to avoid circular deps vs custom library)  -->
+		    <property name="basedir" value="${infinit.e.api.server.location}"/>
 		</ant>
 		<ant antfile="${infinit.e.core.server.location}/build.xml">
 			<property name="basedir" value="${infinit.e.core.server.location}"/>
 		</ant>
 		<ant antfile="${infinit.e.mongo-indexer.location}/build.xml">
 			<property name="basedir" value="${infinit.e.mongo-indexer.location}"/>
+		</ant>
+		<ant antfile="${infinit.e.hadoop.prototyping_engine.location}/build.xml">
+			<property name="basedir" value="${infinit.e.hadoop.prototyping_engine.location}"/>
 		</ant>
 		<ant antfile="${infinit.e.flex.location}/build/build.xml">
 			<property name="basedir" value="${infinit.e.flex.location}"/>
@@ -92,6 +108,9 @@
 		</ant>
 		<ant antfile="${InfiniteMapQuestWidget.location}/build/build.xml">
 			<property name="basedir" value="${InfiniteMapQuestWidget.location}"/>
+		</ant>
+		<ant antfile="${InfiniteQueryMetricsWidget.location}/build/build.xml">
+			<property name="basedir" value="${InfiniteQueryMetricsWidget.location}"/>
 		</ant>
 		<ant antfile="${InfiniteSentimentWidget.location}/build/build.xml">
 			<property name="basedir" value="${InfiniteSentimentWidget.location}"/>
@@ -112,6 +131,9 @@
 			<property name="basedir" value="${InfiniteEntityProfiler.location}"/>
 		</ant>
 
+		<ant antfile="${chrome.extension.source-updater.location}/build.xml">
+			<property name="basedir" value="${chrome.extension.source-updater.location}"/>
+		</ant>
 		<ant antfile="${infinit.e.web.location}/build.xml">
 			<property name="basedir" value="${infinit.e.web.location}"/>
 		</ant>
@@ -141,7 +163,8 @@
 	</target>
 
 	<target name="createrepo" depends="build" description="Create yum repo for RPMs">
-		<mkdir dir="repo"/>
+	    <!--  ONLINE -->
+	    <mkdir dir="repo"/>
 		<copy todir="repo">
 			<fileset dir="${infinit.e-config.rpm.location}/RPMS/noarch/" includes="*.rpm"/>
 			<fileset dir="${infinit.e-index-engine.rpm.location}/RPMS/noarch/" includes="*.rpm"/>
@@ -149,12 +172,15 @@
 			<fileset dir="${infinit.e-processing-engine.rpm.location}/RPMS/noarch/" includes="*.rpm"/>
 			<fileset dir="${infinit.e-db-instance.rpm.location}/RPMS/noarch/" includes="*.rpm"/>
 		</copy>
+	    <!--  OFFLINE -->
+		<tar destfile="infinit.e-install-bundle.tar" basedir="repo"/>	    	    
+	    <!--  FINISH ONLINE -->
 		<exec executable="createrepo">
 			<arg value="-s"/>
 			<arg value="sha"/>
 			<arg value="repo"/>
 		</exec>
-		<zip destfile="infinit.e-install-repo-${infinite_version}-${infinite_release}.zip" basedir="repo"/>
+		<zip destfile="infinit.e-install-repo-${infinite_version}-${infinite_release}.zip" basedir="repo"/>	
 	</target>
 
 

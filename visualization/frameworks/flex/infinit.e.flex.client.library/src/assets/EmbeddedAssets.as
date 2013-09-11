@@ -1,15 +1,15 @@
 /*******************************************************************************
  * Copyright 2012, The Infinit.e Open Source Project.
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License, version 3,
  * as published by the Free Software Foundation.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
@@ -65,6 +65,15 @@ package assets
 		
 		[Embed( source = "/assets/images/Nav-Community_DD.png" )]
 		public static const COMMUNITY_ON:Class;
+		
+		[Embed( source = "/assets/images/NAV-Refresh_Off.png" )]
+		public static const REFRESH_OFF:Class;
+		
+		[Embed( source = "/assets/images/NAV-Refresh_On.png" )]
+		public static const REFRESH_ON:Class;
+		
+		[Embed( source = "/assets/images/NAV-Refresh_Hover.png" )]
+		public static const REFRESH_HOVER:Class;
 		
 		[Embed( source = "/assets/images/DkGrey_Stripe.png" )]
 		public static const DK_GREY_STRIPE:Class;
@@ -143,6 +152,9 @@ package assets
 		
 		[Embed( source = "/assets/images/IKANOW_Logo.png" )]
 		public static const LOGO:Class;
+		
+		[Embed( source = "/assets/images/INFINITE_PoweredBy.png" )]
+		public static const POWEREDBY:Class;
 		
 		[Embed( source = "/assets/images/Max_on.png" )]
 		public static const MAXIMIZE_ON:Class;

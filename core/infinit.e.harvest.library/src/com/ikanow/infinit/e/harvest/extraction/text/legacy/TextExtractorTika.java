@@ -4,6 +4,7 @@ import java.io.InputStream;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.Date;
+import java.util.Map;
 
 import org.apache.tika.Tika;
 import org.apache.tika.exception.TikaException;
@@ -14,6 +15,7 @@ import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorDocumentLevelExcep
 import com.ikanow.infinit.e.data_model.interfaces.harvest.ITextExtractor;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
 import com.ikanow.infinit.e.data_model.store.document.GeoPojo;
+import com.ikanow.infinit.e.harvest.utils.ProxyManager;
 
 public class TextExtractorTika implements ITextExtractor {
 
@@ -42,11 +44,22 @@ public class TextExtractorTika implements ITextExtractor {
 			// Parse the file and get the text of the file
 			
 			URL url = new URL(partialDoc.getUrl());
-			URLConnection urlConnect = url.openConnection();
-			if (null != partialDoc.getTempSource()) {
-				if ((null != partialDoc.getTempSource().getRssConfig()) && (null != partialDoc.getTempSource().getRssConfig().getUserAgent())) {
+			String proxyOverride = null;
+			if ((null != partialDoc.getTempSource()) && 
+					(null != partialDoc.getTempSource().getRssConfig())) 
+			{
+				proxyOverride = partialDoc.getTempSource().getRssConfig().getProxyOverride();
+			}						
+			URLConnection urlConnect = url.openConnection(ProxyManager.getProxy(url, proxyOverride));
+			if (null != partialDoc.getTempSource() && (null != partialDoc.getTempSource().getRssConfig())) {
+				if (null != partialDoc.getTempSource().getRssConfig().getUserAgent()) {
 					urlConnect.setRequestProperty("User-Agent", partialDoc.getTempSource().getRssConfig().getUserAgent());
 				}// TESTED
+				if (null != partialDoc.getTempSource().getRssConfig().getHttpFields()) {
+					for (Map.Entry<String, String> httpFieldPair: partialDoc.getTempSource().getRssConfig().getHttpFields().entrySet()) {
+						urlConnect.setRequestProperty(httpFieldPair.getKey(), httpFieldPair.getValue());														
+					}
+				}//TESTED
 			}
 			
 			InputStream urlStream = null;

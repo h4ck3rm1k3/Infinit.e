@@ -15,15 +15,16 @@
  ******************************************************************************/
 package com.ikanow.infinit.e.api.knowledge;
 
-//TODO (INF-1516): Add new filters to GET interface
-
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.TreeMap;
 
+import org.bson.types.ObjectId;
 import org.restlet.Request;
 import org.restlet.data.MediaType;
 import org.restlet.data.Method;
@@ -44,6 +45,7 @@ import com.ikanow.infinit.e.api.utils.RESTTools;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
 import com.ikanow.infinit.e.data_model.api.knowledge.AdvancedQueryPojo;
+import com.ikanow.infinit.e.data_model.api.knowledge.AdvancedQueryPojo.QueryTermPojo.SentimentModifierPojo;
 import com.ikanow.infinit.e.data_model.store.social.authentication.AuthenticationPojo;
 
 // The resource handlers for Advanced Queries in beta
@@ -55,6 +57,8 @@ import com.ikanow.infinit.e.data_model.store.social.authentication.Authenticatio
 // or...
 // POST<preamble>/knowledge/query/<communityIdList>
 // <JSON object>
+
+//TODO moments interface
 
 public class QueryInterface extends ServerResource 
 {
@@ -161,10 +165,10 @@ public class QueryInterface extends ServerResource
 		try {
 			// First off, check the cookie is valid:
 			String cookieLookup = null; 
-			boolean bNeedCookie = !_requestDetails.output.format.equalsIgnoreCase("rss"); 
+			boolean bNotRss = !_requestDetails.output.format.equalsIgnoreCase("rss"); 
 			// maybe don't need cookie for RSS?
 			// Do a quick bit of further error checking here too:
-			if (bNeedCookie) {
+			if (bNotRss) {
 				if (!_requestDetails.output.format.equalsIgnoreCase("xml") &&
 						!_requestDetails.output.format.equalsIgnoreCase("kml") &&
 						!_requestDetails.output.format.equalsIgnoreCase("json"))
@@ -176,12 +180,70 @@ public class QueryInterface extends ServerResource
 				}
 			}
 			
-			// Perform cookie lookup			
+			// Perform cookie lookup (for RSS may allow us to skip other auth logic)			
 			cookieLookup = RESTTools.cookieLookup(_cookie);
 			
-			// Fail out otherwise perform query (not yet for RSS)
+			if (!bNotRss) { // RSS case
+				//Set the commids to whatever is given in the query to
+				_communityIdStrList = "";
+				for ( ObjectId comm : _requestDetails.communityIds )
+				{
+					_communityIdStrList += "," + comm.toString(); 
+				}
+				_communityIdStrList = _communityIdStrList.substring(1);
+				// Authentication:
+				if (null == cookieLookup) 
+				{ // (else don't need to both)
+					Map<String, String> queryOptions = this.getQuery().getValuesMap();
+					String sKey = queryOptions.get("key");
+					String sKeyCmp = null;
+					if (null != sKey) { // Key allowed to be 1 or 2 things: hash of query or password...
+						sKeyCmp = PasswordEncryption.encrypt(this._queryJson); //encrypt
+					}
+					if ((null == sKeyCmp) || !sKeyCmp.equals(sKey)) {
+						// User/password also allowed, TBD this will require SSL
+						String user = queryOptions.get("user");
+						String password = queryOptions.get("password");
+						AuthenticationPojo authuser = null;
+						if ((null != user) && (null != password)) {
+							authuser = PasswordEncryption.validateUser(user,password, false);
+						}
+						if ( authuser == null )
+						{
+							// Don't have either authentication or key, bomb out...
+							rp = new ResponsePojo();
+							rp.setResponse(new ResponseObject("Cookie Lookup", false, "Cookie session expired or never existed, please login first or use valid key or user/pass"));
+							data = rp.toApi();		
+							mediaType = MediaType.APPLICATION_JSON;
+							return new StringRepresentation(data, mediaType);
+						}
+						cookieLookup = authuser.getProfileId().toString();
+						
+					}
+					//no other auth was used, try using the commid
+					if ( null == cookieLookup )
+					{
+						cookieLookup = _requestDetails.communityIds.get(0).toString();
+					}
+				}
+				// end authentication for RSS
+				// Also, since we're RSS, there's a bunch of output params that we know we don't need:
+				
+				// (output and output.docs are guaranteed to exist)
+				_requestDetails.output.aggregation = null;
+				_requestDetails.output.docs.ents = false;
+				_requestDetails.output.docs.events = false;
+				_requestDetails.output.docs.facts = false;
+				_requestDetails.output.docs.summaries = false;
+				_requestDetails.output.docs.eventsTimeline = false;
+				_requestDetails.output.docs.metadata = false;
+				//set cookielookup to first commid
+				
+			}
 			
-			if ((cookieLookup == null) && bNeedCookie)
+			// Fail out otherwise perform query
+			
+			if (bNotRss && (cookieLookup == null)) // (rss authentication failures handled above)
 			{
 				rp = new ResponsePojo();
 				rp.setResponse(new ResponseObject("Cookie Lookup", false, "Cookie session expired or never existed, please login first"));
@@ -189,33 +251,18 @@ public class QueryInterface extends ServerResource
 			}
 			else 
 			{
-				// Next, assuming success with cookies process the query
-				if (bNeedCookie) 
-				{
-					//check communities are valid before using
-					if ( RESTTools.validateCommunityIds(cookieLookup, _communityIdStrList) )
-						rp = _queryController.doQuery(cookieLookup, _requestDetails, _communityIdStrList, errorString);
-					else {
-						errorString.append(": Community Ids are not valid for this user");
-					}
-				}
-				// (A bit badly written - for RSS don't expend energy yet)
-				// for RSS make the assumption that the URL was generated by our system
-				// and the user and community ids are correct
-				// might want to revisit and force security on RSS (needs more thought)
-				else 
-				{
+				//check communities are valid before using
+				if ( RESTTools.validateCommunityIds(cookieLookup, _communityIdStrList) )
 					rp = _queryController.doQuery(cookieLookup, _requestDetails, _communityIdStrList, errorString);
+				else {
+					errorString.append(": Community Ids are not valid for this user");
 				}
 				
-				
-				//if (bNeedCookie && (null == rp)) { // Error handling
 				if (null == rp) { // Error handling including RSS
 					rp = new ResponsePojo();
 					rp.setResponse(new ResponseObject("Query Format", false, errorString.toString()));					
 					data = rp.toApi();
-				}
-				
+				}				
 				else { // Valid response, output handle all output formats 
 
 					// Output type
@@ -242,34 +289,6 @@ public class QueryInterface extends ServerResource
 					}
 					else if (_requestDetails.output.format.equalsIgnoreCase("rss")) { // RSS
 						
-						// Authentication:
-						if (null == cookieLookup) {
-							Map<String, String> queryOptions = this.getQuery().getValuesMap();
-							String sKey = queryOptions.get("key");
-							String sKeyCmp = null;
-							if (null != sKey) { // Key allowed to be 1 or 2 things: hash of query or password...
-								sKeyCmp = PasswordEncryption.encrypt(this._queryJson); //encrypt
-							}
-							if ((null == sKeyCmp) || !sKeyCmp.equals(sKey)) {
-								// User/password also allowed, TBD this will require SSL
-								String user = queryOptions.get("user");
-								String password = queryOptions.get("password");
-								AuthenticationPojo authuser = null;
-								if ((null != user) && (null != password)) {
-									authuser = PasswordEncryption.validateUser(user,password, false);
-								}
-								if ( authuser == null )
-								{
-									// Don't have either authentication or key, bomb out...
-									rp = new ResponsePojo();
-									rp.setResponse(new ResponseObject("Cookie Lookup", false, "Cookie session expired or never existed, please login first or use valid key or user/pass"));
-									data = rp.toApi();		
-									mediaType = MediaType.APPLICATION_JSON;
-									return new StringRepresentation(data, mediaType);
-								}
-							}
-						} // end authentication:
-						
 						mediaType = MediaType.APPLICATION_XML;
 						RssOutput rss = new RssOutput();
 						
@@ -282,7 +301,7 @@ public class QueryInterface extends ServerResource
 						data = rp.toApi();
 					}
 				}
-			}//TOTEST
+			}//TESTED
 		}
 		catch (Exception e) {
 			e.printStackTrace();
@@ -310,13 +329,14 @@ public class QueryInterface extends ServerResource
 	// this for the moment...
 	
 	private void parseUrlString(Map<String,String> attr) {
-		
+
 		_requestDetails = new AdvancedQueryPojo();
 		
 		TreeMap<Integer, AdvancedQueryPojo.QueryTermPojo> qt = 
 			new TreeMap<Integer, AdvancedQueryPojo.QueryTermPojo>();
 		TreeMap<Integer, AdvancedQueryPojo.QueryInputPojo.TypeAndTagTermPojo> tt = 
 			new TreeMap<Integer, AdvancedQueryPojo.QueryInputPojo.TypeAndTagTermPojo>();
+		TreeMap<Integer, String> momentEnts = new TreeMap<Integer, String>();
 		
 		// And off we go through the different options...
 		
@@ -362,11 +382,29 @@ public class QueryInterface extends ServerResource
 					else if (attrName.equals("entitytype")) {
 						qtIndex.entityType = value;						
 					}
+					else if (attrName.equals("sentiment.min")) {
+						if (null == qtIndex.sentiment) {
+							qtIndex.sentiment = new SentimentModifierPojo();
+						}
+						qtIndex.sentiment.min = Double.parseDouble(value);
+					}
+					else if (attrName.equals("sentiment.max")) {
+						if (null == qtIndex.sentiment) {
+							qtIndex.sentiment = new SentimentModifierPojo();
+						}
+						qtIndex.sentiment.max = Double.parseDouble(value);
+					}
 					else if (attrName.equals("entityopt.expandalias")) {
 						if (null == qtIndex.entityOpt) {
 							qtIndex.entityOpt = new AdvancedQueryPojo.QueryTermPojo.EntityOptionPojo();
 						}
 						qtIndex.entityOpt.expandAlias = Boolean.parseBoolean(value);
+					}
+					else if (attrName.equals("entityopt.rawtext")) {
+						if (null == qtIndex.entityOpt) {
+							qtIndex.entityOpt = new AdvancedQueryPojo.QueryTermPojo.EntityOptionPojo();
+						}
+						qtIndex.entityOpt.rawText = Boolean.parseBoolean(value);
 					}
 					else if (attrName.equals("entityopt.expandontology")) {
 						if (null == qtIndex.entityOpt) {
@@ -428,169 +466,10 @@ public class QueryInterface extends ServerResource
 						}						
 						qtIndex.geo.ontology_type = value;						
 					}
-					else if (attrName.equals("metadataField")) {
+					else if (attrName.equals("metadatafield")) {
 						qtIndex.metadataField = value;						
 					}
-					//association parsing code:
-					else if (attrName.equals("event.entity1.etext")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity1) {
-							qtIndex.event.entity1 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity1.etext = value;
-					}
-					else if (attrName.equals("event.entity1.ftext")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity1) {
-							qtIndex.event.entity1 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity1.ftext = value;
-					}
-					else if (attrName.equals("event.entity1.entity")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity1) {
-							qtIndex.event.entity1 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity1.entity = value;
-					}
-					else if (attrName.equals("event.entity1.entityValue")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity1) {
-							qtIndex.event.entity1 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity1.entityValue = value;
-					}
-					else if (attrName.equals("event.entity1.entityType")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity1) {
-							qtIndex.event.entity1 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity1.entityType = value;
-					}
-					//(No entity opts supported for the moment)
-					else if (attrName.equals("event.entity2.etext")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity2) {
-							qtIndex.event.entity2 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity2.etext = value;
-					}
-					else if (attrName.equals("event.entity2.ftext")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity2) {
-							qtIndex.event.entity2 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity2.ftext = value;
-					}
-					else if (attrName.equals("event.entity2.entity")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity2) {
-							qtIndex.event.entity2 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity2.entity = value;
-					}
-					else if (attrName.equals("event.entity2.entityValue")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity2) {
-							qtIndex.event.entity2 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity2.entityValue = value;
-					}
-					else if (attrName.equals("event.entity2.entityType")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.entity2) {
-							qtIndex.event.entity2 = new AdvancedQueryPojo.QueryTermPojo();
-						}
-						qtIndex.event.entity2.entityType = value;
-					}
-					//(No entity opts supported for the moment)
-					else if (attrName.equals("event.verb")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						qtIndex.event.verb = value;
-					}
-					else if (attrName.equals("event.type")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						qtIndex.event.type = value;
-					}
-					else if (attrName.equals("event.time.min")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.time) {
-							qtIndex.event.time = new AdvancedQueryPojo.QueryTermPojo.TimeTermPojo();
-						}
-						qtIndex.event.time.min = value;
-					}
-					else if (attrName.equals("event.time.max")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.time) {
-							qtIndex.event.time = new AdvancedQueryPojo.QueryTermPojo.TimeTermPojo();
-						}
-						qtIndex.event.time.max = value;						
-					}
-					else if (attrName.equals("event.geo.centerll")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.geo) {
-							qtIndex.event.geo = new AdvancedQueryPojo.QueryTermPojo.GeoTermPojo();
-						}						
-						qtIndex.event.geo.centerll = value;						
-					}
-					else if (attrName.equals("event.geo.dist")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.geo) {
-							qtIndex.event.geo = new AdvancedQueryPojo.QueryTermPojo.GeoTermPojo();
-						}						
-						qtIndex.event.geo.dist = value;												
-					}
-					else if (attrName.equals("event.geo.minll")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.geo) {
-							qtIndex.event.geo = new AdvancedQueryPojo.QueryTermPojo.GeoTermPojo();
-						}						
-						qtIndex.event.geo.minll = value;						
-					}
-					else if (attrName.equals("event.geo.maxll")) {
-						if (null == qtIndex.event) {
-							qtIndex.event = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
-						}
-						if (null == qtIndex.event.geo) {
-							qtIndex.event.geo = new AdvancedQueryPojo.QueryTermPojo.GeoTermPojo();
-						}						
-						qtIndex.event.geo.maxll = value;						
-					}
-					//^^^(event have been renamed associations, see below - want to retire the "event" name for V1)
+					//association parsing code: 
 					else if (attrName.equals("assoc.entity1.etext")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
@@ -618,7 +497,7 @@ public class QueryInterface extends ServerResource
 						}
 						qtIndex.assoc.entity1.entity = value;
 					}
-					else if (attrName.equals("assoc.entity1.entityValue")) {
+					else if (attrName.equals("assoc.entity1.entityvalue")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
 						}
@@ -627,7 +506,7 @@ public class QueryInterface extends ServerResource
 						}
 						qtIndex.assoc.entity1.entityValue = value;
 					}
-					else if (attrName.equals("assoc.entity1.entityType")) {
+					else if (attrName.equals("assoc.entity1.entitytype")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
 						}
@@ -636,7 +515,18 @@ public class QueryInterface extends ServerResource
 						}
 						qtIndex.assoc.entity1.entityType = value;
 					}
-					//(No entity opts supported for the moment)
+					else if (attrName.equals("assoc.entity1.entityopt.rawtext")) { // (only supported entity opt)
+						if (null == qtIndex.assoc) {
+							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
+						}
+						if (null == qtIndex.assoc.entity1) {
+							qtIndex.assoc.entity1 = new AdvancedQueryPojo.QueryTermPojo();
+						}
+						if (null == qtIndex.assoc.entity1.entityOpt) {
+							qtIndex.assoc.entity1.entityOpt = new AdvancedQueryPojo.QueryTermPojo.EntityOptionPojo();
+						}
+						qtIndex.assoc.entity1.entityOpt.rawText = Boolean.parseBoolean(value);
+					}
 					else if (attrName.equals("assoc.entity2.etext")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
@@ -664,7 +554,7 @@ public class QueryInterface extends ServerResource
 						}
 						qtIndex.assoc.entity2.entity = value;
 					}
-					else if (attrName.equals("assoc.entity2.entityValue")) {
+					else if (attrName.equals("assoc.entity2.entityvalue")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
 						}
@@ -673,7 +563,7 @@ public class QueryInterface extends ServerResource
 						}
 						qtIndex.assoc.entity2.entityValue = value;
 					}
-					else if (attrName.equals("assoc.entity2.entityType")) {
+					else if (attrName.equals("assoc.entity2.entitytype")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
 						}
@@ -682,7 +572,18 @@ public class QueryInterface extends ServerResource
 						}
 						qtIndex.assoc.entity2.entityType = value;
 					}
-					//(No entity opts supported for the moment)
+					else if (attrName.equals("assoc.entity2.entityopt.rawtext")) { // (only supported entity opt)
+						if (null == qtIndex.assoc) {
+							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
+						}
+						if (null == qtIndex.assoc.entity2) {
+							qtIndex.assoc.entity2 = new AdvancedQueryPojo.QueryTermPojo();
+						}
+						if (null == qtIndex.assoc.entity2.entityOpt) {
+							qtIndex.assoc.entity2.entityOpt = new AdvancedQueryPojo.QueryTermPojo.EntityOptionPojo();
+						}
+						qtIndex.assoc.entity2.entityOpt.rawText = Boolean.parseBoolean(value);
+					}
 					else if (attrName.equals("assoc.verb")) {
 						if (null == qtIndex.assoc) {
 							qtIndex.assoc = new AdvancedQueryPojo.QueryTermPojo.AssociationTermPojo();
@@ -754,6 +655,12 @@ public class QueryInterface extends ServerResource
 			}
 			else if (attrName.equals("logic")) {
 				_requestDetails.logic = value;
+			}
+			else if (attrName.equals("expandalias")) {
+				_requestDetails.expandAlias = Boolean.parseBoolean(value);
+			}
+			else if (attrName.equals("explain")) {
+				_requestDetails.explain = Boolean.parseBoolean(value);
 			}
 			else if (attrName.equals("raw")) {
 				_requestDetails.raw = new AdvancedQueryPojo.QueryRawPojo(value);
@@ -828,6 +735,48 @@ public class QueryInterface extends ServerResource
 				}
 				_requestDetails.score.relWeight = Double.parseDouble(value);								
 			}
+			else if (attrName.equals("score.scoreents")) {
+				if (null == _requestDetails.score) {
+					_requestDetails.score = new AdvancedQueryPojo.QueryScorePojo();
+				}
+				_requestDetails.score.scoreEnts = Boolean.parseBoolean(value);								
+			}
+			else if (attrName.equals("score.adjustaggregatesig")) {
+				if (null == _requestDetails.score) {
+					_requestDetails.score = new AdvancedQueryPojo.QueryScorePojo();
+				}
+				_requestDetails.score.adjustAggregateSig = Boolean.parseBoolean(value);								
+			}
+			else if (attrName.startsWith("score.sourceweights.")) {
+				if (null == _requestDetails.score) {
+					_requestDetails.score = new AdvancedQueryPojo.QueryScorePojo();
+				}
+				if (null == _requestDetails.score.sourceWeights) {
+					_requestDetails.score.sourceWeights = new HashMap<String, Double>();
+				}
+				String key = attrName.substring(20); // len("score.sourceweights"+".")
+				_requestDetails.score.sourceWeights.put(key, Double.parseDouble(value));
+			}
+			else if (attrName.startsWith("score.typeweights.")) {
+				if (null == _requestDetails.score) {
+					_requestDetails.score = new AdvancedQueryPojo.QueryScorePojo();
+				}
+				if (null == _requestDetails.score.typeWeights) {
+					_requestDetails.score.typeWeights = new HashMap<String, Double>();
+				}
+				String key = attrName.substring(18); // len("score.typeweights"+".")
+				_requestDetails.score.typeWeights.put(key, Double.parseDouble(value));
+			}
+			else if (attrName.startsWith("score.tagweights.")) {
+				if (null == _requestDetails.score) {
+					_requestDetails.score = new AdvancedQueryPojo.QueryScorePojo();
+				}
+				if (null == _requestDetails.score.tagWeights) {
+					_requestDetails.score.tagWeights = new HashMap<String, Double>();
+				}
+				String key = attrName.substring(17); // len("score.tagweights"+".")
+				_requestDetails.score.tagWeights.put(key, Double.parseDouble(value));
+			}
 			else if (attrName.equals("score.timeprox.time")) {
 				if (null == _requestDetails.score) {
 					_requestDetails.score = new AdvancedQueryPojo.QueryScorePojo();
@@ -871,7 +820,6 @@ public class QueryInterface extends ServerResource
 				}
 				_requestDetails.output.format = value;
 			}
-			//TODO (INF-475): Test cases for all these
 			else if (attrName.equals("output.docs.enable")) {
 				if (null == _requestDetails.output) {
 					_requestDetails.output = new AdvancedQueryPojo.QueryOutputPojo();
@@ -1046,24 +994,66 @@ public class QueryInterface extends ServerResource
 				}
 				_requestDetails.output.aggregation.sourceMetadata = Integer.parseInt(value);				
 			}
-			else if (attrName.equals("output.filter.assocVerbs")) { // comma-separated list 
+			else if (attrName.equals("output.filter.assocverbs")) { // comma-separated list 
 				if (null == _requestDetails.output) {
 					_requestDetails.output = new AdvancedQueryPojo.QueryOutputPojo();
 				}
 				if (null == _requestDetails.output.filter) {
 					_requestDetails.output.filter = new AdvancedQueryPojo.QueryOutputPojo.FilterOutputPojo();
 				}
-				_requestDetails.output.filter.assocVerbs = value.toLowerCase().split("\\s*,\\s*");
+				_requestDetails.output.filter.assocVerbs = value.split("\\s*,\\s*");
 			}
-			else if (attrName.equals("output.filter.entityTypes")) { // comma-separated list 
+			else if (attrName.equals("output.filter.entitytypes")) { // comma-separated list 
 				if (null == _requestDetails.output) {
 					_requestDetails.output = new AdvancedQueryPojo.QueryOutputPojo();
 				}
 				if (null == _requestDetails.output.filter) {
 					_requestDetails.output.filter = new AdvancedQueryPojo.QueryOutputPojo.FilterOutputPojo();
 				}
-				_requestDetails.output.filter.entityTypes = value.toLowerCase().split("\\s*,\\s*");
+				_requestDetails.output.filter.entityTypes = value.split("\\s*,\\s*");
 			}
+			// moments
+			else if (attrName.equals("output.aggregation.moments.timesinterval")) {
+				if (null == _requestDetails.output) {
+					_requestDetails.output = new AdvancedQueryPojo.QueryOutputPojo();
+				}
+				if (null == _requestDetails.output.aggregation) {
+					_requestDetails.output.aggregation = new AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo();
+				}
+				if (null == _requestDetails.output.aggregation.moments) {
+					_requestDetails.output.aggregation.moments = new AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo.TemporalAggregationOutputPojo();
+				}
+				_requestDetails.output.aggregation.moments.timesInterval = value;
+			}//TOTEST
+			else if (attrName.equals("output.aggregation.moments.entitylist")) {
+				if (null == _requestDetails.output) {
+					_requestDetails.output = new AdvancedQueryPojo.QueryOutputPojo();
+				}
+				if (null == _requestDetails.output.aggregation) {
+					_requestDetails.output.aggregation = new AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo();
+				}
+				if (null == _requestDetails.output.aggregation.moments) {
+					_requestDetails.output.aggregation.moments = new AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo.TemporalAggregationOutputPojo();
+				}
+				_requestDetails.output.aggregation.moments.entityList = Arrays.asList(value.split("\\s*,\\s*"));
+			}//TESTED
+			else if (attrName.startsWith("output.aggregation.moments.entitylist[")) {
+				if (null == _requestDetails.output) {
+					_requestDetails.output = new AdvancedQueryPojo.QueryOutputPojo();
+				}
+				if (null == _requestDetails.output.aggregation) {
+					_requestDetails.output.aggregation = new AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo();
+				}
+				if (null == _requestDetails.output.aggregation.moments) {
+					_requestDetails.output.aggregation.moments = new AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo.TemporalAggregationOutputPojo();
+				}
+				int npos = attrName.indexOf(']');				
+				if (npos >= 0) {
+					String index = attrName.substring(38, npos);		
+					int nIndex = Integer.parseInt(index);
+					momentEnts.put(nIndex, value);
+				}
+			}//TESTED
 			
 // Generic event aggregation: not implemented (INF-1230)
 // Moments: not implemented (INF-955)
@@ -1081,6 +1071,9 @@ public class QueryInterface extends ServerResource
 			for (AdvancedQueryPojo.QueryInputPojo.TypeAndTagTermPojo ttIndex: tt.values()) {
 				_requestDetails.input.typeAndTags.add(ttIndex);
 			}
+		}
+		if (!momentEnts.isEmpty()) {
+			_requestDetails.output.aggregation.moments.entityList = new ArrayList<String>(momentEnts.values());
 		}
 		// Fill in the blanks (a decent attempt has been made to fill out the blanks inside these options)
 		if (null == _requestDetails.input) {
@@ -1114,6 +1107,8 @@ public class QueryInterface extends ServerResource
 	@SuppressWarnings("unused")
 	private void testUrlParsing()
 	{
+		//TODO (INF-475): 1) now missing lots of test cases, 2) convert this to some JUnit thing
+		
 		String testString = 
 			"qt[0].ftext=\"ftext0\"&qt[0].etext=etext0"+
 			"&qt[1].entityValue=entity1&qt[1].entityType=type1"+
@@ -1164,7 +1159,6 @@ public class QueryInterface extends ServerResource
 			System.out.println(testResults);			
 			System.out.println(refResults);			
 		}
-		//TODO (INF-475): convert this to some JUnit thing
 	}
 	
 } // (end class QueryResource)

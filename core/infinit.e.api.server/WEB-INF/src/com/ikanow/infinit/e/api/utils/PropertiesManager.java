@@ -135,5 +135,22 @@ public class PropertiesManager {
 	public String getRemoteAccessDeny() {
 		return this.getProperty("remote.access.deny");
 	}
+	//ALIASING
+	public boolean getAliasingEnabled() {
+		String s = this.getProperty("api.aliasing.enabled");
+		if (null == s) {
+			return true;
+		}
+		else return Boolean.parseBoolean(s);
+	}
+	
+	// AGGREGATION ACCURACY-PERFORMANCE TRADE-OFFS: none (don't allow aggregations), low (calc aggregations manually), full (use facets)
+	public String getAggregationAccuracy() {
+		String s =  this.getProperty("api.aggregation.accuracy");
+		if (null == s) {
+			s = "full";
+		}
+		return s;
+	}
 	
 }

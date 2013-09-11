@@ -34,9 +34,12 @@ import org.restlet.resource.ResourceException;
 import org.restlet.resource.ServerResource;
 
 import com.ikanow.infinit.e.api.utils.RESTTools;
+import com.ikanow.infinit.e.data_model.api.BasePojoApiMap;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
 import com.ikanow.infinit.e.data_model.store.social.sharing.SharePojo;
+import com.mongodb.BasicDBList;
+import com.mongodb.BasicDBObject;
 import com.mongodb.util.JSON;
 
 public class ShareInterface extends ServerResource
@@ -55,7 +58,8 @@ public class ShareInterface extends ServerResource
 	private String type = null;
 	private String title = null;
 	private String description = null;
-	private String documentId = null;
+	private String documentId = null; // addref not currently supported
+	private String documentLoc = null;
 	private String comment = null;
 	
 	//
@@ -67,8 +71,9 @@ public class ShareInterface extends ServerResource
 	SharePojo sharePojo = null;
 	private byte[] binaryData = null;
 	private boolean returnContent = true;
+	private boolean jsonOnly = false; 
 	private boolean ignoreAdmin = false;
-	
+	private boolean isEndorsed = false;	
 	
 	/**
 	 * ShareResource
@@ -95,6 +100,30 @@ public class ShareInterface extends ServerResource
 			if (RESTTools.decodeRESTParam("type", attributes) != null) type = RESTTools.decodeRESTParam("type", attributes);
 			if (RESTTools.decodeRESTParam("title", attributes) != null) title = RESTTools.decodeRESTParam("title", attributes);
 			if (RESTTools.decodeRESTParam("description", attributes) != null) description = RESTTools.decodeRESTParam("description", attributes);
+			
+			// Add a Ref (Pointer to a record within a collection)
+			if ( urlStr.contains("/share/add/ref/") )
+			{
+				type = RESTTools.decodeRESTParam("type", attributes);
+				documentLoc = RESTTools.decodeRESTParam("documentloc", attributes);
+				documentId = RESTTools.decodeRESTParam("documentid", attributes);
+				title = RESTTools.decodeRESTParam("title", attributes);
+				description = RESTTools.decodeRESTParam("description", attributes);
+				action = "addRef";
+			}
+			
+			// Add a Ref (Pointer to a record within a collection)
+			else if ( urlStr.contains("/share/update/ref/") )
+			{
+				id = RESTTools.decodeRESTParam("id", attributes);
+				type = RESTTools.decodeRESTParam("type", attributes);
+				documentLoc = RESTTools.decodeRESTParam("documentloc", attributes);
+				documentId = RESTTools.decodeRESTParam("documentid", attributes);
+				title = RESTTools.decodeRESTParam("title", attributes);
+				description = RESTTools.decodeRESTParam("description", attributes);
+				action = "updateRef";
+			}
+			
 		}
 		
 		// Method.GET
@@ -115,6 +144,9 @@ public class ShareInterface extends ServerResource
 			}
 			if ((queryOptions.get("nocontent") != null) && (queryOptions.get("nocontent").equalsIgnoreCase("true"))) {
 				returnContent = false;				
+			}
+			if ((queryOptions.get("nometa") != null) && (queryOptions.get("nometa").equalsIgnoreCase("true"))) {
+				jsonOnly = true;
 			}
 
 			// Get Share by ID
@@ -169,6 +201,7 @@ public class ShareInterface extends ServerResource
 			else if ( urlStr.contains("/share/add/ref/") )
 			{
 				type = RESTTools.decodeRESTParam("type", attributes);
+				documentLoc = RESTTools.decodeRESTParam("documentloc", attributes);
 				documentId = RESTTools.decodeRESTParam("documentid", attributes);
 				title = RESTTools.decodeRESTParam("title", attributes);
 				description = RESTTools.decodeRESTParam("description", attributes);
@@ -180,6 +213,7 @@ public class ShareInterface extends ServerResource
 			{
 				id = RESTTools.decodeRESTParam("id", attributes);
 				type = RESTTools.decodeRESTParam("type", attributes);
+				documentLoc = RESTTools.decodeRESTParam("documentloc", attributes);
 				documentId = RESTTools.decodeRESTParam("documentid", attributes);
 				title = RESTTools.decodeRESTParam("title", attributes);
 				description = RESTTools.decodeRESTParam("description", attributes);
@@ -201,6 +235,15 @@ public class ShareInterface extends ServerResource
 				action = "removeShare";
 			}
 
+			// Endorse share
+			else if ( urlStr.contains("/share/endorse/") )
+			{
+				shareId = RESTTools.decodeRESTParam("shareid", attributes);
+				communityId = RESTTools.decodeRESTParam("communityid", attributes);
+				isEndorsed = Boolean.parseBoolean(RESTTools.decodeRESTParam("isendorsed", attributes));
+				action = "endorseShare";
+			}
+			
 			// Share - Add a community so that members can view the share
 			else if ( urlStr.contains("/share/add/community/") )
 			{
@@ -304,8 +347,7 @@ public class ShareInterface extends ServerResource
 			 if (cookieLookup == null )
 			 {
 				 // User is not logged in
-				 rp.setResponse(new ResponseObject("Cookie Lookup",false,"Cookie session expired or" +
-				 " never existed, please login first"));
+				 rp.setResponse(new ResponseObject("Cookie Lookup",false,"Cookie session expired or never existed, please login first"));
 			 }
 			 else
 			 {
@@ -334,15 +376,19 @@ public class ShareInterface extends ServerResource
 				 }
 				 else if (action.equals("addRef"))
 				 {
-					 rp = this.shareController.addRef(personId, type, documentId, title, description);
+					 rp = this.shareController.addRef(personId, type, documentLoc, documentId, title, description);
 				 }
 				 else if (action.equals("updateRef"))
 				 {
-					 rp = this.shareController.updateRef(personId, id, type, documentId, title, description);
+					 rp = this.shareController.updateRef(personId, id, type, documentLoc, documentId, title, description);
 				 }
 				 else if (action.equals("removeShare"))
 				 {
 					 rp = this.shareController.removeShare(personId, shareId);
+				 }
+				 else if (action.equals("endorseShare"))
+				 {
+					 rp = this.shareController.endorseShare(personId, communityId, shareId, isEndorsed);
 				 }
 				 else if (action.equals("addCommunity"))
 				 {
@@ -357,7 +403,8 @@ public class ShareInterface extends ServerResource
 					 rp = this.shareController.getShare(personId, shareId, returnContent);	
 					 SharePojo share = (SharePojo) rp.getData();
 					 if (null != share) {
-						 if ( share.getType().equals("binary") && returnContent )					 
+						 boolean bBinary = share.getType().equals("binary");
+						 if ( bBinary && returnContent )					 
 						 {			
 							 try
 							 {							 
@@ -367,15 +414,25 @@ public class ShareInterface extends ServerResource
 							 }
 							 catch (Exception ex )
 							 {
-								 rp = new ResponsePojo(new ResponseObject("get Share",false,"error converting bytes to output"));
+								 rp = new ResponsePojo(new ResponseObject("get Share",false,"error converting bytes to output: " + ex.getMessage()));
 							 }						 
+						 }
+						 else if (!bBinary && jsonOnly) {
+							 try {
+								 BasicDBObject dbo = (BasicDBObject) com.mongodb.util.JSON.parse(share.getShare());
+								 rp.setData(dbo, null);
+							 }
+							 catch (Exception e) { // Try a list instead
+								 BasicDBList dbo = (BasicDBList) com.mongodb.util.JSON.parse(share.getShare());
+								 rp.setData(dbo, (BasePojoApiMap<BasicDBList>)null);								 
+							 }
 						 }
 					 }
 					 //(else error)
 				 }
 				 else if (action.equals("searchShares"))
 				 {
-					 rp = this.shareController.searchShares(personId, searchby, id, type, skip, limit, ignoreAdmin);
+					 rp = this.shareController.searchShares(personId, searchby, id, type, skip, limit, ignoreAdmin, returnContent);
 				 }	 
 			 }
 		 }

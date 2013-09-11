@@ -38,6 +38,7 @@ harvest.feed.wait=HARVEST_FEED_WAIT
 harvest.feed.useragent=HARVESTER_USERAGENT
 harvest.maxdocs_persource=HARVESTER_MAXDOCS_SOURCE
 harvest.security=HARVESTER_SECURITY
+harvest.proxy=HARVESTER_PROXY
 
 #####################################################
 #Mail Server Settings
@@ -51,6 +52,7 @@ mail.from_address=MAIL_FROM
 # .terms="*" "something" "something" ...
 api.search.test.terms=TEST_TERMS
 api.search.expected.results=EXPECTED_RESULTS
+api.aggregation.accuracy=API_AGG_ACCURACY
 
 #####################################################
 # EMail Addresses for log files etc.
@@ -68,6 +70,11 @@ extractor.text.default=DEFAULT_TEXT_EXTRACTOR
 # Alchemy Postproc Settings
 # 1==people postproc, 2==geo postproc, 3==both
 app.alchemy.postproc=ALCHEMY_POSTPROC_VAL
+
+#####################################################
+# Hadoop config path
+hadoop.configpath=HADOOP_DIR
+hadoop.local_mode=HADOOP_LOCALMODE
 
 #####################################################
 # JDBC Drives Supported by Infinit.e

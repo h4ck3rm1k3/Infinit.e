@@ -22,11 +22,13 @@ import java.io.StringWriter;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -35,11 +37,22 @@ import java.util.regex.Pattern;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerException;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
 
 import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.log4j.Logger;
+import org.bson.types.ObjectId;
 import org.htmlcleaner.CleanerProperties;
-import org.htmlcleaner.CompactXmlSerializer;
+import org.htmlcleaner.DomSerializer;
 import org.htmlcleaner.HtmlCleaner;
 import org.htmlcleaner.TagNode;
 import org.htmlcleaner.XPatherException;
@@ -47,13 +60,18 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.XML;
+import org.w3c.dom.Document;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorDocumentLevelException;
 import com.ikanow.infinit.e.data_model.store.config.source.SimpleTextCleanserPojo;
-import com.ikanow.infinit.e.data_model.InfiniteEnums;
+import com.ikanow.infinit.e.data_model.store.config.source.SourcePipelinePojo.ManualTextExtractionSpecPojo;
+import com.ikanow.infinit.e.data_model.store.config.source.SourcePipelinePojo.MetadataSpecPojo;
 import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
+import com.ikanow.infinit.e.data_model.store.config.source.SourceRssConfigPojo;
 import com.ikanow.infinit.e.data_model.store.config.source.UnstructuredAnalysisConfigPojo;
 import com.ikanow.infinit.e.data_model.store.config.source.UnstructuredAnalysisConfigPojo.Context;
 import com.ikanow.infinit.e.data_model.store.config.source.UnstructuredAnalysisConfigPojo.metaField;
@@ -64,15 +82,139 @@ import com.ikanow.infinit.e.harvest.extraction.document.file.XmlToMetadataParser
 import com.ikanow.infinit.e.harvest.extraction.text.legacy.TextExtractorTika;
 import com.ikanow.infinit.e.harvest.utils.HarvestExceptionUtils;
 import com.ikanow.infinit.e.harvest.utils.PropertiesManager;
+import com.ikanow.infinit.e.harvest.utils.ProxyManager;
 import com.mongodb.BasicDBList;
 
 /**
  * UnstructuredAnalysisHarvester
  */
 public class UnstructuredAnalysisHarvester {
-	// Configuration
-	private Set<Integer> sourceTypesCanHarvest = new HashSet<Integer>();
+	
+	///////////////////////////////////////////////////////////////////////////////////////////
+	
+	// NEW PROCESSING PIPELINE INTERFACE
 
+	//TODO (INF-1922): Handle headers and footers
+	
+	public void setContext(HarvestContext context) {
+		_context = context;
+		
+		//TODO: need to set up the javascript engine just once - can't do it here though
+		// because this might be called before the SAH is setup...		
+	} 
+	
+	// Transform the doc's text (go get it if necessary)
+	
+	public void doManualTextEnrichment(DocumentPojo doc, List<ManualTextExtractionSpecPojo> textExtractors, SourceRssConfigPojo feedConfig) throws IOException {
+		// Map to the legacy format and then call the legacy code 
+		ArrayList<SimpleTextCleanserPojo> mappedTextExtractors = new ArrayList<SimpleTextCleanserPojo>(textExtractors.size());
+		for (ManualTextExtractionSpecPojo textExtractor: textExtractors) {
+			if (DocumentPojo.fullText_.equalsIgnoreCase(textExtractor.fieldName)) {
+				getRawTextFromUrlIfNeeded(doc, feedConfig);				
+					// (if transforming full text then grab the raw body from the URL if necessary)
+			}			
+			SimpleTextCleanserPojo mappedTextExtractor = new SimpleTextCleanserPojo();
+			mappedTextExtractor.setField(textExtractor.fieldName);
+			mappedTextExtractor.setFlags(textExtractor.flags);
+			mappedTextExtractor.setScript(textExtractor.script);
+			mappedTextExtractor.setScriptlang(textExtractor.scriptlang);
+			mappedTextExtractor.setReplacement(textExtractor.replacement);
+			mappedTextExtractors.add(mappedTextExtractor);
+		}
+		this.cleanseText(mappedTextExtractors, doc);
+		
+	}
+	//TESTED (fulltext_regexTests.json)
+	
+	public void processMetadataChain(DocumentPojo doc, List<MetadataSpecPojo> metadataFields, SourceRssConfigPojo feedConfig) throws IOException
+	{
+		getRawTextFromUrlIfNeeded(doc, feedConfig);				
+			// (generally need full text for documents grab the raw body from the URL if necessary)
+		
+		// Map metadata list to a legacy meta format (they're really similar...)
+		UnstructuredAnalysisConfigPojo.metaField mappedEl = new UnstructuredAnalysisConfigPojo.metaField();
+		for (MetadataSpecPojo meta: metadataFields) {
+			mappedEl.fieldName = meta.fieldName;
+			mappedEl.context = Context.All;
+			mappedEl.flags = meta.flags;
+			if (null == mappedEl.flags) {
+				mappedEl.flags = "";
+			}
+			mappedEl.scriptlang = meta.scriptlang;
+			mappedEl.script = meta.script;
+			mappedEl.replace = meta.replace;
+			//(no group num - just use replace, and flags "o" for xpath/gN:-1)
+			
+			this.processMeta(doc, mappedEl, doc.getFullText(), null, null);						
+		}
+		//TODO (INF-1922) (store/index)
+	}
+	//TESTED (fulltext_regexTests.json)
+	
+	///////////////////////////////////////////////////////////////////////////////////////////
+	
+	// PROCESSING PIPELINE - UTILITIES
+	
+	public void getRawTextFromUrlIfNeeded(DocumentPojo doc, SourceRssConfigPojo feedConfig) throws IOException {
+		if (null != doc.getFullText()) { // Nothing to do
+			return;
+		}
+		Scanner s = null;
+		try {
+			URL url = new URL(doc.getUrl());
+			URLConnection urlConnect = null;
+			if (null != feedConfig) {
+				urlConnect = url.openConnection(ProxyManager.getProxy(url, feedConfig.getProxyOverride()));
+				if (null != feedConfig.getUserAgent()) {
+					urlConnect.setRequestProperty("User-Agent", feedConfig.getUserAgent());
+				}// TESTED
+				if (null != feedConfig.getHttpFields()) {
+					for (Map.Entry<String, String> httpFieldPair: feedConfig.getHttpFields().entrySet()) {
+						urlConnect.setRequestProperty(httpFieldPair.getKey(), httpFieldPair.getValue());														
+					}
+				}//TOTEST
+			}
+			else {
+				urlConnect = url.openConnection();				
+			}
+			InputStream urlStream = null;
+			try {
+				urlStream = urlConnect.getInputStream();
+			}
+			catch (Exception e) { // Try one more time, this time exception out all the way
+				if (null != feedConfig) {
+					urlConnect = url.openConnection(ProxyManager.getProxy(url, feedConfig.getProxyOverride()));
+					if (null != feedConfig.getUserAgent()) {
+						urlConnect.setRequestProperty("User-Agent", feedConfig.getUserAgent());
+					}// TESTED
+					if (null != feedConfig.getHttpFields()) {
+						for (Map.Entry<String, String> httpFieldPair: feedConfig.getHttpFields().entrySet()) {
+							urlConnect.setRequestProperty(httpFieldPair.getKey(), httpFieldPair.getValue());														
+						}
+					}//TESTED
+				}
+				else {
+					urlConnect = url.openConnection();				
+				}
+				urlStream = urlConnect.getInputStream();
+			}
+			s = new Scanner(urlStream, "UTF-8");
+			doc.setFullText(s.useDelimiter("\\A").next());
+		}
+		finally { //(release resources)
+			if (null != s) {
+				s.close();
+			}
+		}		
+		
+	}//TESTED (cut-and-paste from existing code, so new testing very cursory) 
+	
+	///////////////////////////////////////////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////////////////////////////////////////
+	
+	// LEGACY CODE - USE TO SUPPORT OLD CODE FOR NOW + AS UTILITY CODE FOR THE PIPELINE LOGIC
+	
 	// Per-source state
 	private Pattern headerPattern = null;
 	private Pattern footerPattern = null;
@@ -106,9 +248,15 @@ public class UnstructuredAnalysisHarvester {
 	 * Default Constructor
 	 */
 	public UnstructuredAnalysisHarvester() {
-		sourceTypesCanHarvest.add(InfiniteEnums.UNSTRUCTUREDANALYSIS);
 	}
 
+	// For harvest pipeline, just ensures duplicate map exists and is empty for each doc
+	public void resetForNewDoc() {
+		if ((null == regexDuplicates) || (!regexDuplicates.isEmpty())) {
+			regexDuplicates = new HashSet<String>();
+		}
+	}
+	
 	/**
 	 * executeHarvest(SourcePojo source, List<DocumentPojo> feeds)
 	 * 
@@ -143,7 +291,7 @@ public class UnstructuredAnalysisHarvester {
 			List<metaField> meta = uap.getMeta();
 
 			if (headerRegEx != null)
-				headerPattern = createRegex(headerRegEx, uap.getHeaderRexExFlags());
+				headerPattern = createRegex(headerRegEx, uap.getHeaderRegExFlags());
 			if (footerRegEx != null)
 				footerPattern = createRegex(footerRegEx, uap.getFooterRegExFlags());
 
@@ -152,7 +300,7 @@ public class UnstructuredAnalysisHarvester {
 			while (it.hasNext()) {
 				nDocs++;
 				DocumentPojo d = it.next();
-				regexDuplicates = new HashSet<String>();
+ 				regexDuplicates = new HashSet<String>();
 				cleaner = null;
 
 				// For feeds, may need to go get the document text manually,
@@ -161,6 +309,9 @@ public class UnstructuredAnalysisHarvester {
 				// extraction
 				boolean bFetchedUrl = false;
 				if (bGetRawDoc && (null == d.getFullText())) {
+					if (null == source.getRssConfig()) {
+						source.setRssConfig(new SourceRssConfigPojo()); // (makes logic easier down the road)
+					}
 					// (first time through, sleep following a URL/RSS access)
 					if ((1 == nDocs) && (null != source.getUrl())) { // (have already made a call to RSS (or "searchConfig" URL)
 						try {
@@ -179,21 +330,7 @@ public class UnstructuredAnalysisHarvester {
 							}
 						}
 						else {
-							URL url = new URL(d.getUrl());
-							URLConnection urlConnect = url.openConnection();
-							if ((null != source.getRssConfig()) && (null != source.getRssConfig().getUserAgent())) {
-								urlConnect.setRequestProperty("User-Agent", source.getRssConfig().getUserAgent());
-							}// TESTED
-							
-							InputStream urlStream = null;
-							try {
-								urlStream = urlConnect.getInputStream();
-							}
-							catch (Exception e) { // Try one more time, this time exception out all the way
-								urlStream = urlConnect.getInputStream();					 
-							}
-							
-							d.setFullText(new Scanner(urlStream).useDelimiter("\\A").next());
+							this.getRawTextFromUrlIfNeeded(d, source.getRssConfig());
 						}
 						bFetchedUrl = true;
 						
@@ -216,7 +353,7 @@ public class UnstructuredAnalysisHarvester {
 
 				try {
 					if (uap.getSimpleTextCleanser() != null) {
-						cleanseText(source, d);
+						cleanseText(uap.getSimpleTextCleanser(), d);
 					}
 				} catch (Exception e) {
 					this._context.getHarvestStatus().logMessage("cleanseText: " + e.getMessage(), true);
@@ -299,6 +436,9 @@ public class UnstructuredAnalysisHarvester {
 		}
 		boolean bFetchedUrl = false;
 		if (bGetRawDoc) {
+			if (null == source.getRssConfig()) {
+				source.setRssConfig(new SourceRssConfigPojo()); // (makes logic easier down the road)
+			}
 			try {
 				// Workaround for observed twitter bug (first access after the
 				// RSS was gzipped)
@@ -321,26 +461,7 @@ public class UnstructuredAnalysisHarvester {
 					}
 				}
 				else {
-				
-					URL url = new URL(doc.getUrl());
-					URLConnection urlConnect = url.openConnection();
-					if ((null != source.getRssConfig()) && (null != source.getRssConfig().getUserAgent())) {
-						urlConnect.setRequestProperty("User-Agent", source.getRssConfig().getUserAgent());
-					}// TESTED
-					
-					InputStream urlStream = null;
-					try {
-						urlStream = urlConnect.getInputStream();
-					}
-					catch (Exception e) { // Try one more time, this time exception out all the way
-						url = new URL(doc.getUrl());
-						urlConnect = url.openConnection();
-						if ((null != source.getRssConfig()) && (null != source.getRssConfig().getUserAgent())) {
-							urlConnect.setRequestProperty("User-Agent", source.getRssConfig().getUserAgent());
-						}// TESTED
-						urlStream = urlConnect.getInputStream();					 
-					}
-					doc.setFullText(new Scanner(urlStream).useDelimiter("\\A").next());
+					getRawTextFromUrlIfNeeded(doc, source.getRssConfig());
 				}
 				bFetchedUrl = true;
 				
@@ -373,7 +494,7 @@ public class UnstructuredAnalysisHarvester {
 			}
 			try {
 				if (uap.getSimpleTextCleanser() != null) {
-					cleanseText(source, doc);
+					cleanseText(uap.getSimpleTextCleanser(), doc);
 				}
 			} catch (Exception e) {
 				this._context.getHarvestStatus().logMessage("cleanseText: " + e.getMessage(), true);
@@ -505,8 +626,13 @@ public class UnstructuredAnalysisHarvester {
 	/**
 	 * processMeta - handle an individual field
 	 */
+	//TODO: source+uap are just used in the setup js engine code - should probably be able to fix that
 	private void processMeta(DocumentPojo f, metaField m, String text, SourcePojo source, UnstructuredAnalysisConfigPojo uap) {
 
+		boolean bAllowDuplicates = false;
+		if ((null != m.flags) && m.flags.contains("D")) {
+			bAllowDuplicates = true;
+		}		
 		if ((null == m.scriptlang) || m.scriptlang.equalsIgnoreCase("regex")) {
 
 			Pattern metaPattern = createRegex(m.script, m.flags);
@@ -535,7 +661,9 @@ public class UnstructuredAnalysisHarvester {
 
 					if (!regexDuplicates.contains(dupCheck)) {
 						Llist.add(toAdd);
-						regexDuplicates.add(dupCheck);
+						if (!bAllowDuplicates) {
+							regexDuplicates.add(dupCheck);
+						}
 					}
 				}
 				if (null != Llist) {
@@ -551,56 +679,16 @@ public class UnstructuredAnalysisHarvester {
 				f.setMetadata(new LinkedHashMap<String, Object[]>());
 			}
 			//set the script engine up if necessary
-			if ( null == engine )
-			{
-				//use the passed in sah one if possible
-				if ( null != this.get_sahEngine())
-				{
-					engine = this.get_sahEngine();
-				}
-				else if (null == factory)  //otherwise create our own
-				{
-					//set up the security manager
-					securityManager = new JavascriptSecurityManager();	
-					
-					factory = new ScriptEngineManager();
-					engine = factory.getEngineByName("JavaScript");		
-					//grab any json cache and make it available to the engine
-					try
-					{
-						if (null != uap.getCaches()) {
-							CacheUtils.addJSONCachesToEngine(uap.getCaches(), engine, source.getCommunityIds(), _context);
-						}
-					}
-					catch (Exception ex)
-					{
-						_context.getHarvestStatus().logMessage("JSONcache: " + ex.getMessage(), true);						
-						logger.error("JSONcache: " + ex.getMessage(), ex);
-					}
-				}
-				//once engine is created, do some initialization
-				if ( null != engine )
-				{
-					if (null == parsingScript) 
-					{
-						parsingScript = JavaScriptUtils.generateParsingScript();
-					}
-					try 
-					{
-						securityManager.eval(engine, parsingScript);						
-					} 
-					catch (ScriptException e) { // Just do nothing and log
-						e.printStackTrace();
-						logger.error(e.getMessage());
-					}
-				}
+			if ((null != source) && (null != uap)) {
+				//(these are null if called from new processing pipeline vs legacy code)
+				intializeScriptEngine(source, uap);
 			}
 			
 			try 
 			{
 				// Javascript: the user passes in 
 				Object[] currField = f.getMetadata().get(m.fieldName);
-				if (null == m.flags) {
+				if ((null == m.flags) || m.flags.isEmpty()) {
 					if (null == currField) {
 						engine.put("text", text);
 						engine.put("_iterator", null);
@@ -673,38 +761,44 @@ public class UnstructuredAnalysisHarvester {
 				createHtmlCleanerIfNeeded();
 
 				TagNode node = cleaner.clean(new ByteArrayInputStream(text.getBytes()));
+				
+				//NewCode : Only use html cleaner for cleansing
+				//use JAXP for full Xpath lib
+				Document doc = new DomSerializer(new CleanerProperties()).createDOM(node);
+				
 
 				String xpath = m.script;
-				// (For some reason /html/body will not work but beginning with //body does)
 
 				String extraRegex = extractRegexFromXpath(xpath);
 
 				if (extraRegex != null)
 					xpath = xpath.replace("regex(" + extraRegex + ")", "");
-
-				if (xpath.startsWith("/html/body/")) {
-					xpath = xpath.replace("/html/body/", "//body/");
-				} else if (xpath.startsWith("/html[1]/body[1]/")) {
-					xpath = xpath.replace("/html[1]/body[1]/", "//body/");
-				}
-
-				Object[] data_nodes = node.evaluateXPath(xpath);
-
-				if (data_nodes.length > 0) {
-					StringBuffer prefix = new StringBuffer(m.fieldName)
-							.append(':');
+				
+				XPath xpa = XPathFactory.newInstance().newXPath();
+				NodeList res = (NodeList)xpa.evaluate(xpath, doc, XPathConstants.NODESET);
+				
+				if (res.getLength() > 0)
+				{
+					if ((null != m.flags) && (m.flags.contains("o"))) { // "o" for object
+						m.groupNum = -1; // (see bConvertToObject below)
+					}
+					StringBuffer prefix = new StringBuffer(m.fieldName).append(':');
 					int nFieldNameLen = m.fieldName.length() + 1;
-
-					ArrayList<Object> Llist = new ArrayList<Object>(data_nodes.length);
+					ArrayList<Object> Llist = new ArrayList<Object>(res.getLength());
 					boolean bConvertToObject = ((m.groupNum != null) && (m.groupNum == -1));
-					for (Object o : data_nodes) {
-						TagNode info_node = (TagNode) o;
-						
+					for (int i= 0; i< res.getLength(); i++)
+					{
+						Node info_node = res.item(i);
 						if (bConvertToObject) {
 							// Try to create a JSON object out of this
-							CompactXmlSerializer xmlSerializer = new CompactXmlSerializer(cleaner.getProperties());
 							StringWriter writer = new StringWriter();
-							xmlSerializer.write(info_node, writer, "UTF-8");
+							try {
+								Transformer transformer = TransformerFactory.newInstance().newTransformer();
+								transformer.transform(new DOMSource(info_node), new StreamResult(writer));
+							} catch (TransformerException e1) {
+								continue;
+							}
+
 							try {
 								JSONObject subObj = XML.toJSONObject(writer.toString());
 								if (xpath.endsWith("*"))  { // (can have any number of different names here)
@@ -726,7 +820,7 @@ public class UnstructuredAnalysisHarvester {
 							//TESTED
 						}
 						else { // Treat this as string, either directly or via regex
-							String info = info_node.getText().toString().trim();
+							String info = info_node.getTextContent().trim();
 							if (extraRegex == null || extraRegex.isEmpty()) {
 								prefix.setLength(nFieldNameLen);
 								prefix.append(info);
@@ -737,7 +831,9 @@ public class UnstructuredAnalysisHarvester {
 										info = StringEscapeUtils.unescapeHtml(info);
 									}
 									Llist.add(info);
-									regexDuplicates.add(dupCheck);
+									if (!bAllowDuplicates) {
+										regexDuplicates.add(dupCheck);
+									}
 								}
 							} 
 							else { // Apply regex to the string
@@ -759,7 +855,9 @@ public class UnstructuredAnalysisHarvester {
 											toAdd = StringEscapeUtils.unescapeHtml(toAdd);
 										}
 										Llist.add(toAdd);
-										regexDuplicates.add(dupCheck);
+										if (!bAllowDuplicates) {
+											regexDuplicates.add(dupCheck);
+										}
 									}
 	
 									result = dataMatcher.find();
@@ -772,19 +870,20 @@ public class UnstructuredAnalysisHarvester {
 					}
 				}
 
-			} catch (XPatherException e) {
-				_context.getHarvestStatus().logMessage(HarvestExceptionUtils.createExceptionMessage(e).toString(), true);
-
-				// Just do nothing and log
-				logger.error(e.getMessage());
-				
 			} catch (IOException ioe) {
 				_context.getHarvestStatus().logMessage(HarvestExceptionUtils.createExceptionMessage(ioe).toString(), true);
 
 				// Just do nothing and log
 				logger.error(ioe.getMessage());
+			} catch (ParserConfigurationException e1) {
+				_context.getHarvestStatus().logMessage(HarvestExceptionUtils.createExceptionMessage(e1).toString(), true);
+				// Just do nothing and log
+				logger.error(e1.getMessage());
+			} catch (XPathExpressionException e1) {
+				_context.getHarvestStatus().logMessage(HarvestExceptionUtils.createExceptionMessage(e1).toString(), true);
+				// Just do nothing and log
+				logger.error(e1.getMessage());
 			}
-
 		}
 		// (don't currently support other script types)
 	}
@@ -812,11 +911,8 @@ public class UnstructuredAnalysisHarvester {
 	 * @param documents
 	 * @return
 	 */
-	private void cleanseText(SourcePojo source, DocumentPojo document)
+	private void cleanseText(List<SimpleTextCleanserPojo> simpleTextCleanser, DocumentPojo document)
 	{
-		List<SimpleTextCleanserPojo> simpleTextCleanser = source
-				.getUnstructuredAnalysisConfig().getSimpleTextCleanser();
-		
 		// Store these since can re-generate them by concatenation
 		StringBuffer fullTextBuilder = null;
 		StringBuffer descriptionBuilder = null;
@@ -827,8 +923,9 @@ public class UnstructuredAnalysisHarvester {
 		for (SimpleTextCleanserPojo s : simpleTextCleanser) {
 			boolean bConcat = (null != s.getFlags()) && s.getFlags().contains("+");
 			
+			boolean bUsingJavascript = ((null != s.getScriptlang()) && s.getScriptlang().equalsIgnoreCase("javascript"));
 			if (s.getField().equalsIgnoreCase("fulltext")) {
-				if (null != document.getFullText()) {
+				if ((null != document.getFullText()) || bUsingJavascript) {
 					StringBuffer myBuilder = fullTextBuilder;
 					
 					if ((!bConcat) && (null != myBuilder) && (myBuilder.length() > 0)) {
@@ -838,7 +935,7 @@ public class UnstructuredAnalysisHarvester {
 					
 					String res = cleanseField(document.getFullText(),
 												s.getScriptlang(), s.getScript(), s.getFlags(),
-												s.getReplacement());					
+												s.getReplacement(), document);					
 					if (bConcat) {
 						if (null == myBuilder) {
 							fullTextBuilder = myBuilder = new StringBuffer();
@@ -851,7 +948,7 @@ public class UnstructuredAnalysisHarvester {
 				}
 			} //TESTED
 			else if (s.getField().equalsIgnoreCase("description")) {
-				if (null != document.getDescription()) {
+				if ((null != document.getDescription()) || bUsingJavascript) {
 					StringBuffer myBuilder = descriptionBuilder;
 					
 					if ((!bConcat) && (null != myBuilder) && (myBuilder.length() > 0)) {
@@ -861,7 +958,7 @@ public class UnstructuredAnalysisHarvester {
 					
 					String res = cleanseField(document.getDescription(),
 												s.getScriptlang(), s.getScript(), s.getFlags(),
-												s.getReplacement());
+												s.getReplacement(), document);
 					
 					if (bConcat) {
 						if (null == myBuilder) {
@@ -875,7 +972,7 @@ public class UnstructuredAnalysisHarvester {
 				}
 			} //TESTED
 			else if (s.getField().equalsIgnoreCase("title")) {
-				if (null != document.getTitle()) {
+				if ((null != document.getTitle()) || bUsingJavascript) {
 					StringBuffer myBuilder = titleBuilder;
 					
 					if ((!bConcat) && (null != myBuilder) && (myBuilder.length() > 0)) {
@@ -885,7 +982,7 @@ public class UnstructuredAnalysisHarvester {
 					
 					String res = cleanseField(document.getTitle(),
 												s.getScriptlang(), s.getScript(), s.getFlags(),
-												s.getReplacement());
+												s.getReplacement(), document);
 					if (bConcat) {
 						if (null == myBuilder) {
 							titleBuilder = myBuilder = new StringBuffer();
@@ -909,7 +1006,7 @@ public class UnstructuredAnalysisHarvester {
 							newMeta[i] = (Object) cleanseField(
 									(String) metaValue, s.getScriptlang(),
 									s.getScript(), s.getFlags(),
-									s.getReplacement());
+									s.getReplacement(), document);
 						} else {
 							newMeta[i] = metaValue;
 						}
@@ -943,7 +1040,7 @@ public class UnstructuredAnalysisHarvester {
 	 * @param replaceWith
 	 */
 	private String cleanseField(String field, String scriptLang, String script,
-									String flags, String replaceWith) 
+									String flags, String replaceWith, DocumentPojo f) 
 	{
 		if ((null == scriptLang) || scriptLang.equalsIgnoreCase("regex")) {
 			if (null == flags) {
@@ -1012,7 +1109,43 @@ public class UnstructuredAnalysisHarvester {
 			catch (XPatherException e) {
 				_context.getHarvestStatus().logMessage(HarvestExceptionUtils.createExceptionMessage(e).toString(), true);
 			}
+		}
+		else if (scriptLang.equalsIgnoreCase("javascript")) {
+			try {
+				SourcePojo src = f.getTempSource();
+				intializeScriptEngine(src, src.getUnstructuredAnalysisConfig());
 
+				// Setup input:
+				if (null == flags) {
+					flags = "t";
+				}
+				if (flags.contains("t")) { // text
+					engine.put("text", field);							
+				}
+				if (flags.contains("d")) { // entire document
+					GsonBuilder gb = new GsonBuilder();
+					Gson g = gb.create();	
+					JSONObject document = new JSONObject(g.toJson(f));
+			        engine.put("document", document);
+			        securityManager.eval(engine, JavaScriptUtils.initScript);			        						
+				}
+				if (flags.contains("m")) { // metadata
+					GsonBuilder gb = new GsonBuilder();
+					Gson g = gb.create();	
+					JSONObject iterator = new JSONObject(g.toJson(f.getMetadata()));
+					engine.put("_metadata", iterator);
+					securityManager.eval(engine, JavaScriptUtils.iteratorMetaScript);
+				}
+				Object returnVal = securityManager.eval(engine, script);
+				field = (String) returnVal; // (If not a string or is null then will exception out)
+			}
+			catch (Exception e) {
+				_context.getHarvestStatus().logMessage(HarvestExceptionUtils.createExceptionMessage(e).toString(), true);
+
+				// Just do nothing and log
+				// e.printStackTrace();
+				logger.error(e.getMessage());
+			}
 		}
 		return field;
 	}
@@ -1023,7 +1156,7 @@ public class UnstructuredAnalysisHarvester {
 		if (null != flags) {
 			for (int i = 0; i < flags.length(); ++i) {
 				char c = flags.charAt(i);
-				switch (c) {
+				switch (c) { 
 				case 'm':
 					nflags |= Pattern.MULTILINE;
 					break;
@@ -1058,7 +1191,8 @@ public class UnstructuredAnalysisHarvester {
 			props.setOmitComments(true);
 			props.setTreatUnknownTagsAsContent(false);
 			props.setTranslateSpecialEntities(true);
-			props.setTransResCharsToNCR(true);	
+			props.setTransResCharsToNCR(true);
+			props.setNamespacesAware(false);
 		}		
 	}
 
@@ -1076,4 +1210,98 @@ public class UnstructuredAnalysisHarvester {
 	public JavascriptSecurityManager get_sahSecurity() {
 		return securityManager;
 	}	
+
+	///////////////////////////////////////////////////
+	
+	// Javascript scripting utilities:
+	
+	public void intializeScriptEngine(SourcePojo source, UnstructuredAnalysisConfigPojo uap) {
+		if ( null == engine )
+		{
+			//use the passed in sah one if possible
+			if ( null != this.get_sahEngine())
+			{
+				engine = this.get_sahEngine();
+			}
+			else if (null == factory)  //otherwise create our own
+			{
+				//set up the security manager
+				securityManager = new JavascriptSecurityManager();	
+				
+				factory = new ScriptEngineManager();
+				engine = factory.getEngineByName("JavaScript");		
+				//grab any json cache and make it available to the engine
+			}
+			//once engine is created, do some initialization
+			if ( null != engine )
+			{
+				if (null != source) {
+					loadLookupCaches(uap.getCaches(), source.getCommunityIds());
+					List<String> scriptFiles = null;
+					if (null != uap.getScriptFiles()) {
+						scriptFiles = Arrays.asList(uap.getScriptFiles());
+					}
+					loadGlobalFunctions(scriptFiles, uap.getScript());
+				}
+				
+			}
+		}//end start engine up		
+		
+	}
+	
+	//////////////////////////////////////////////////////
+	
+	// Utilities that in legacy mode are called from the initializeScriptEngine, but can be called
+	// standalone in the pipelined mode:
+	
+	public void loadLookupCaches(Map<String, ObjectId> caches, Set<ObjectId> communityIds)
+	{
+		try
+		{
+			if (null != caches) {
+				CacheUtils.addJSONCachesToEngine(caches, engine, communityIds, _context);
+			}
+		}
+		catch (Exception ex)
+		{
+			_context.getHarvestStatus().logMessage("JSONcache: " + ex.getMessage(), true);						
+			logger.error("JSONcache: " + ex.getMessage(), ex);
+		}
+	}
+	public void loadGlobalFunctions(List<String> imports, String script) 
+	{
+        // Pass scripts into the engine
+        try 
+        {
+        	// Eval script passed in s.script
+        	if (script != null) securityManager.eval(engine, script);
+        	
+        	// Retrieve and eval script files in s.scriptFiles
+        	if (imports != null)
+        	{
+        		for (String file : imports)
+        		{
+        			securityManager.eval(engine, JavaScriptUtils.getJavaScriptFile(file));
+        		}
+        	}
+		} 
+        catch (ScriptException e) 
+		{
+			this._context.getHarvestStatus().logMessage("ScriptException: " + e.getMessage(), true);						
+			logger.error("ScriptException: " + e.getMessage(), e);
+		}
+        
+		if (null == parsingScript) 
+		{
+			parsingScript = JavaScriptUtils.generateParsingScript();
+		}
+		try 
+		{
+			securityManager.eval(engine, parsingScript);						
+		} 
+		catch (ScriptException e) { // Just do nothing and log
+			e.printStackTrace();
+			logger.error(e.getMessage());
+		}
+	}
 }

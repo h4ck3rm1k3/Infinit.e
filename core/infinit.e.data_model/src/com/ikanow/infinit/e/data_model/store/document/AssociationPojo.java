@@ -19,6 +19,7 @@ import java.util.List;
 
 import com.google.gson.reflect.TypeToken;
 import com.ikanow.infinit.e.data_model.store.BaseDbPojo;
+import com.ikanow.infinit.e.data_model.utils.ContentUtils;
 
 // This is for events that live in the document (FeedPojo), not the "standalone" EventGazateerPojo
 
@@ -52,6 +53,8 @@ public class AssociationPojo extends BaseDbPojo
 	final public static String geo_index_ = "geo_index";
 	private String assoc_type = null;
 	final public static String assoc_type_ = "assoc_type";
+	private Double sentiment = null; // directed sentiment from ent1 to ent2
+	final public static String sentiment_ = "sentiment";
 	
 	private String assoc_index = null; // (for counting on in facets)	
 	final public static String assoc_index_ = "assoc_index";
@@ -87,7 +90,7 @@ public class AssociationPojo extends BaseDbPojo
 		return entity1_index;
 	}
 	public void setEntity1_index(String entity1_index) {
-		this.entity1_index = entity1_index;
+		this.entity1_index = ContentUtils.stripDiacritics(entity1_index);
 	}
 	public String getVerb() {
 		return verb;
@@ -111,7 +114,7 @@ public class AssociationPojo extends BaseDbPojo
 		return entity2_index;
 	}
 	public void setEntity2_index(String entity2_index) {
-		this.entity2_index = entity2_index;
+		this.entity2_index = ContentUtils.stripDiacritics(entity2_index);
 	}
 	public String getTime_start() {
 		return time_start;
@@ -135,7 +138,7 @@ public class AssociationPojo extends BaseDbPojo
 		return geo_index;
 	}
 	public void setGeo_index(String geo_index) {
-		this.geo_index = geo_index;
+		this.geo_index = ContentUtils.stripDiacritics(geo_index);
 	}
 	public String getAssociation_type() {
 		return assoc_type;
@@ -181,6 +184,12 @@ public class AssociationPojo extends BaseDbPojo
 	}
 	public void setGeo_sig(Double geo_sig) {
 		this.geo_sig = geo_sig;
+	}
+	public void setSentiment(Double sentiment) {
+		this.sentiment = sentiment;
+	}
+	public Double getSentiment() {
+		return sentiment;
 	}
 
 }

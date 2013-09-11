@@ -15,6 +15,7 @@
  ******************************************************************************/
 package com.ikanow.infinit.e.shared.control
 {
+	import com.ikanow.infinit.e.query.model.manager.QueryManager;
 	import com.ikanow.infinit.e.shared.control.base.InfiniteController;
 	import com.ikanow.infinit.e.shared.event.SetupEvent;
 	import com.ikanow.infinit.e.shared.event.UserEvent;
@@ -23,6 +24,7 @@ package com.ikanow.infinit.e.shared.control
 	import com.ikanow.infinit.e.shared.model.vo.ui.DialogControl;
 	import com.ikanow.infinit.e.shared.model.vo.ui.ServiceResult;
 	import com.ikanow.infinit.e.shared.service.user.IUserServiceDelegate;
+	import flash.utils.setTimeout;
 	import mx.resources.ResourceManager;
 	import mx.rpc.events.ResultEvent;
 	
@@ -42,10 +44,24 @@ package com.ikanow.infinit.e.shared.control
 		[Inject]
 		public var userManager:UserManager;
 		
+		[Inject]
+		public var queryManager:QueryManager;
+		
 		
 		//======================================
 		// public methods 
 		//======================================
+		
+		[EventHandler( event = "UserEvent.REFRESH" )]
+		/**
+		 * Get User
+		 * @param event
+		 */
+		public function getRefresh( event:UserEvent ):void
+		{
+			queryManager.refreshing = true;
+			getUser( event );
+		}
 		
 		[EventHandler( event = "UserEvent.GET_USER" )]
 		/**
@@ -67,7 +83,7 @@ package com.ikanow.infinit.e.shared.control
 			{
 				userManager.setCurrentUser( ServiceResult( event.result ).data as User );
 				//now that current user is set we can ask for the widgetsave
-				getWidgetOptions();
+				setTimeout( getWidgetOptions, 500 );
 			}
 		}
 		

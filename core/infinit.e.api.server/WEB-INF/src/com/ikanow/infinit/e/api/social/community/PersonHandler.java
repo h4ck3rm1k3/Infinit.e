@@ -26,6 +26,7 @@ import org.apache.log4j.Logger;
 import org.bson.types.ObjectId;
 
 import com.ikanow.infinit.e.api.authentication.PasswordEncryption;
+import com.ikanow.infinit.e.api.utils.RESTTools;
 import com.ikanow.infinit.e.data_model.InfiniteEnums.AccountStatus;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
@@ -35,6 +36,7 @@ import com.ikanow.infinit.e.data_model.api.authentication.WordPressSetupPojo;
 import com.ikanow.infinit.e.data_model.api.authentication.WordPressUserPojo;
 import com.ikanow.infinit.e.data_model.api.social.person.PersonPojoApiMap;
 import com.ikanow.infinit.e.data_model.store.DbManager;
+import com.ikanow.infinit.e.data_model.store.MongoDbManager;
 import com.ikanow.infinit.e.data_model.store.social.authentication.AuthenticationPojo;
 import com.ikanow.infinit.e.data_model.store.social.community.CommunityMemberPojo;
 import com.ikanow.infinit.e.data_model.store.social.community.CommunityPojo;
@@ -96,6 +98,87 @@ public class PersonHandler
 		}
 		return rp;
 	}	
+	
+	public ResponsePojo listPerson(String userId)
+	{
+		ResponsePojo rp = new ResponsePojo();
+		try
+		{
+			PersonPojo person = PersonHandler.getPerson(userId);	
+			boolean isAdmin = RESTTools.adminLookup(userId);
+			CommunityPojo system_comm = getSystemCommunity();
+			List<ObjectId> communityIds = new ArrayList<ObjectId>();
+			for ( PersonCommunityPojo community : person.getCommunities())
+			{
+				ObjectId comm_id = community.get_id();
+				if ( allowedToSeeCommunityMembers(comm_id, isAdmin, system_comm) )
+				{
+					communityIds.add(comm_id);
+				}
+			}
+			BasicDBObject query = new BasicDBObject();
+			query.put("communities._id", new BasicDBObject( MongoDbManager.in_, communityIds ));
+			DBCursor dbc = DbManager.getSocial().getPerson().find(query);
+			
+			
+			if (dbc.count() > 0)
+			{
+				rp.setData(PersonPojo.listFromDb(dbc, PersonPojo.listType()), new PersonPojoApiMap());
+				rp.setResponse(new ResponseObject("People List", true, "List returned successfully"));				
+			}
+			else
+			{
+				rp.setResponse(new ResponseObject("People List", true, "No list to return returned"));	
+			}
+			
+		} 
+		catch (Exception e)
+		{
+			logger.error("Exception Message: " + e.getMessage(), e);
+			rp.setResponse(new ResponseObject("Person List", false, "Error returning person list: " + e.getMessage()
+					+ " - " + e.getStackTrace().toString()));
+		}
+		return rp;
+	}
+	
+	private boolean allowedToSeeCommunityMembers(ObjectId communityId, boolean isAdmin, CommunityPojo systemCommunity)
+	{
+		//admin can see everything, always return true
+		if ( isAdmin )
+			return true;
+		else
+		{
+			//if this is the system community, check if publicMemberOverride is true
+			if ( systemCommunity != null && systemCommunity.getId().equals(communityId))
+			{
+				if ( systemCommunity.getCommunityAttributes().containsKey("publishMemberOverride") && 
+						systemCommunity.getCommunityAttributes().get("publishMemberOverride").getValue().equals("true"))
+				{
+					return true;
+				}
+				else
+				{
+					return false;
+				}
+			}
+			else
+			{
+				//all other communities can show members for now
+				return true;
+			}
+		}
+	}
+	
+	private CommunityPojo getSystemCommunity()
+	{
+		BasicDBObject query = new BasicDBObject("isSystemCommunity", true);
+		BasicDBObject dbo = (BasicDBObject)DbManager.getSocial().getCommunity().findOne(query);
+		if (dbo != null)
+		{
+			return CommunityPojo.fromDb(dbo, CommunityPojo.class);	
+		}
+		return null;
+	}
 	
 	/**
 	 * getAllPeople (REST, CURRENTLY UNUSED)
@@ -289,6 +372,7 @@ public class PersonHandler
 			else {
 				ap.setModified(df.parse(wpa.getModified()));				
 			}
+			ap.setApiKey(wpa.getApiKey());
 			
 			//Step 5 Save all of these objects to the DB
 			DbManager.getSocial().getPerson().insert(pp.toDb());
@@ -310,6 +394,17 @@ public class PersonHandler
 			}								
 			rp.setResponse(new ResponseObject("WP Register User",true,"User Registered Successfully"));
 			rp.setData(ap, new AuthenticationPojoApiMap());
+			
+			// OK we're all good, finally for API key users create a persistent cookie:
+			if (null != ap.getApiKey()) {
+				CookiePojo cp = new CookiePojo();
+				cp.set_id(profileId);
+				cp.setCookieId(cp.get_id());
+				cp.setApiKey(wpa.getApiKey());
+				cp.setStartDate(ap.getCreated());
+				cp.setProfileId(profileId);
+				DbManager.getSocial().getCookies().save(cp.toDb());
+			}//TOTEST
 		}
 		catch (Exception ex )
 		{
@@ -478,6 +573,28 @@ public class PersonHandler
 			//Handle dates (just update modified times)
 			pp.setModified(new Date());
 			ap.setModified(new Date());
+			
+			if ((null != wpa.getApiKey()) && (0 == wpa.getApiKey().length()) && (null != ap.getApiKey()))			
+			{
+				// Delete existing API key
+				CookiePojo removeMe = new CookiePojo();
+				removeMe.setApiKey(ap.getApiKey());
+				ap.setApiKey(null);				
+				DbManager.getSocial().getCookies().remove(removeMe.toDb());
+			}
+			else if (null != wpa.getApiKey()) {
+				// Change or create API key
+				ap.setApiKey(wpa.getApiKey());
+				CookiePojo cp = new CookiePojo();
+				cp.set_id(ap.getProfileId());
+				cp.setCookieId(cp.get_id());
+				cp.setApiKey(wpa.getApiKey());
+				cp.setStartDate(ap.getCreated());
+				cp.setProfileId(ap.getProfileId());
+				DbManager.getSocial().getCookies().save(cp.toDb());								
+			}
+			//TOTEST
+			//else if api key is null then leave alone, assume hasn't changed
 			
 			//update old entries
 			DbManager.getSocial().getPerson().update(new BasicDBObject("_id", pp.get_id()), pp.toDb());

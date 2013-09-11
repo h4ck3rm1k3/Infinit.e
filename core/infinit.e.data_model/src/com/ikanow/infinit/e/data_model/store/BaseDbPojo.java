@@ -51,6 +51,8 @@ public class BaseDbPojo {
 		return new GsonBuilder()
 			.registerTypeAdapter(ObjectId.class, new ObjectIdDeserializer())
 			.registerTypeAdapter(Date.class, new DateDeserializer())			
+			.registerTypeAdapter(Long.class, new LongDeserializer())			
+			.registerTypeAdapter(Integer.class, new IntegerDeserializer())			
 			.registerTypeAdapter(ObjectId.class, new ObjectIdSerializer())
 			.registerTypeAdapter(Date.class, new DateSerializer());
 	}
@@ -85,7 +87,7 @@ public class BaseDbPojo {
 		if (null != dynamicMap) {
 			gb = dynamicMap.extendBuilder(gb);
 		}
-		return (DBObject) com.mongodb.util.JSON.parse(gb.create().toJson(s));
+		return (DBObject) MongoDbUtil.encode(gb.create().toJsonTree(s).getAsJsonObject());
 	}
 	/////////////////////////////////////////////////////////////////////////////////////
 	// From the API JSON To a single Object
@@ -140,7 +142,7 @@ public class BaseDbPojo {
 		} catch (Exception e) {
 			return null;
 		}
-		return (DBObject) com.mongodb.util.JSON.parse(gb.create().toJson(list, listType.getType()));
+		return (DBObject) MongoDbUtil.encodeArray(gb.create().toJsonTree(list, listType.getType()).getAsJsonArray());
 	}
 	/////////////////////////////////////////////////////////////////////////////////////
 	// From the API JSON to a list of objects
@@ -246,4 +248,31 @@ public class BaseDbPojo {
 			return jo;
 		}
 	}	
+	// OK MongoDB is very keen on turning Long/Integer into doubles (eg from the console) - these converts them back 
+	protected static class LongDeserializer implements JsonDeserializer<Long> 
+	{
+		@Override
+		public Long deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) throws JsonParseException
+		{
+			try {
+				return json.getAsLong();
+			}
+			catch (Exception e) {
+				return (long)json.getAsNumber().doubleValue();
+			}
+		}
+	}
+	protected static class IntegerDeserializer implements JsonDeserializer<Integer> 
+	{
+		@Override
+		public Integer deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) throws JsonParseException
+		{
+			try {
+				return json.getAsInt();
+			}
+			catch (Exception e) {
+				return (int)json.getAsNumber().doubleValue();
+			}
+		}
+	}
 }

@@ -18,6 +18,7 @@ package com.ikanow.infinit.e.harvest.extraction.document.rss;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -25,6 +26,7 @@ import java.util.regex.Pattern;
 
 import org.apache.log4j.Logger;
 
+import com.ikanow.infinit.e.data_model.InfiniteEnums.HarvestEnum;
 import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
 import com.ikanow.infinit.e.data_model.store.config.source.SourceRssConfigPojo;
 import com.ikanow.infinit.e.data_model.store.config.source.SourceRssConfigPojo.ExtraUrlPojo;
@@ -40,23 +42,33 @@ public class FeedHarvester_searchEngineSubsystem {
 
 	private static final Logger logger = Logger.getLogger(FeedHarvester_searchEngineSubsystem.class);
 	
-	private int maxDocsPerCycle = 1000; // (should never exceed this, anyway...)
+	private int maxDocsPerCycle = Integer.MAX_VALUE; // (should never exceed this, anyway...)
 	
 	public void generateFeedFromSearch(SourcePojo src, HarvestContext context) {
 
 		if (context.isStandalone()) {
 			maxDocsPerCycle = context.getStandaloneMaxDocs();
 		}		
+		// otherwise get everything and worry about max docs in the main feed harvester
+		// (probably slightly less efficient than checking duplicates here, but much simpler, can 
+		//  always change it later)
 		
 		String savedUrl = src.getUrl();
 		SourceRssConfigPojo feedConfig = src.getRssConfig();		
 		SourceSearchFeedConfigPojo searchConfig = feedConfig.getSearchConfig();
+		String savedProxyOverride = feedConfig.getProxyOverride();
 		if ((null == feedConfig) || (null == searchConfig)) {
 			return;
 		}
+
+		// Now allowed to stop paginating on duplicate in success_iteration/error cases
+		if ((null == src.getHarvestStatus()) || (HarvestEnum.success != src.getHarvestStatus().getHarvest_status())) {
+			searchConfig.setStopPaginatingOnDuplicate(false);
+		}//TESTED		
 		
 		UnstructuredAnalysisConfigPojo savedUAHconfig = src.getUnstructuredAnalysisConfig(); // (can be null)
 		String savedUserAgent = feedConfig.getUserAgent();
+		LinkedHashMap<String, String> savedHttpFields = feedConfig.getHttpFields();
 		Integer savedWaitTimeOverride_ms = feedConfig.getWaitTimeOverride_ms();
 
 		// Create a deduplication set to ensure URLs derived from the search pages don't duplicate the originals
@@ -65,8 +77,14 @@ public class FeedHarvester_searchEngineSubsystem {
 		if (null != src.getRssConfig().getExtraUrls()) {
 			Iterator<ExtraUrlPojo> itDedupUrls = src.getRssConfig().getExtraUrls().iterator();
 			while (itDedupUrls.hasNext()) {
-				String dedupUrl = itDedupUrls.next().url;
-				dedupSet.add(dedupUrl);
+				ExtraUrlPojo itUrl = itDedupUrls.next();
+				if (null != itUrl.title) {
+					String dedupUrl = itUrl.url;
+					dedupSet.add(dedupUrl);
+					if (maxDocsPerCycle != Integer.MAX_VALUE) {
+						maxDocsPerCycle++; // (ensure we get as far as adding these)
+					}
+				}
 			}
 		}//TESTED
 		
@@ -103,6 +121,9 @@ public class FeedHarvester_searchEngineSubsystem {
 				if (0 == nIteratingDepth) {
 					if (null != urlPojo.title) { // Also harvest this
 						src.getRssConfig().getExtraUrls().add(urlPojo);
+						if (maxDocsPerCycle != Integer.MAX_VALUE) {
+							maxDocsPerCycle--; // (now added, can remove)
+						}
 					}
 				}
 				currTitle = urlPojo.title;
@@ -140,10 +161,21 @@ public class FeedHarvester_searchEngineSubsystem {
 					
 				}//TESTED
 	
-				for (int nPage = 0; nPage < nMaxPages; ++nPage) {
-					if (dedupSet.size() >= maxDocsPerCycle) {
+				// Page limit check (see also nLinksFound/nCurrDedupSetSize inside loop)
+				int nMinLinksToExitLoop = 10; // (use to check one iteration past the point at which nothing happens)
+				
+				// If checking vs duplicates then have a flag to exit (note: only applies to the current URL)
+				boolean stopPaginating = false;
+				boolean stopLinkFollowing = false; 
+					// (if set to stop paginating but only link following occurs, assume this is treated like pagination, eg nextUrl sort of thing)
+				
+				for (int nPage = 0; nPage < nMaxPages; ++nPage) {										
+					if ((dedupSet.size() >= maxDocsPerCycle) || stopPaginating) {
 						break;
 					}
+					// Will use this to check if we reached a page limit (eg some sites will just repeat the same page over and over again)
+					int nLinksFound = 0;
+					int nCurrDedupSetSize = dedupSet.size();
 					
 					String url = savedUrl;	
 					
@@ -167,10 +199,28 @@ public class FeedHarvester_searchEngineSubsystem {
 			// Create a custom UAH object to fetch and parse the search results
 			
 					UnstructuredAnalysisConfigPojo dummyUAHconfig = new UnstructuredAnalysisConfigPojo();
-					dummyUAHconfig.AddMetaField("searchEngineSubsystem", Context.First, feedConfig.getSearchConfig().getScript(), "javascript", "dt");
+					if (null == feedConfig.getSearchConfig().getScriptflags()) { // Set flags if necessary
+						if (null == feedConfig.getSearchConfig().getExtraMeta()) {
+							feedConfig.getSearchConfig().setScriptflags("dt");
+						}
+						else {
+							feedConfig.getSearchConfig().setScriptflags("dtm");							
+						}
+					}
+					if (null != feedConfig.getSearchConfig().getExtraMeta()) {
+						dummyUAHconfig.CopyMeta(feedConfig.getSearchConfig().getExtraMeta());
+					}
+					dummyUAHconfig.setScript(feedConfig.getSearchConfig().getGlobals());
+					dummyUAHconfig.AddMetaField("searchEngineSubsystem", Context.All, feedConfig.getSearchConfig().getScript(), "javascript", feedConfig.getSearchConfig().getScriptflags());
 					src.setUnstructuredAnalysisConfig(dummyUAHconfig);
+					if (null != searchConfig.getProxyOverride()) {
+						feedConfig.setProxyOverride(searchConfig.getProxyOverride());
+					}
 					if (null != searchConfig.getUserAgent()) {
 						feedConfig.setUserAgent(searchConfig.getUserAgent());
+					}
+					if (null != searchConfig.getHttpFields()) {
+						feedConfig.setHttpFields(searchConfig.getHttpFields());
 					}
 					if (null != searchConfig.getWaitTimeBetweenPages_ms()) {
 						// Web etiquette: don't hit the same site too often
@@ -180,8 +230,13 @@ public class FeedHarvester_searchEngineSubsystem {
 					//TESTED (including RSS-level value being written back again and applied in SAH/UAH code)
 					
 					DocumentPojo searchDoc = new DocumentPojo();
+					// Required terms:
 					searchDoc.setUrl(url);
 					searchDoc.setScore((double)nIteratingDepth); // (spidering param)
+					// Handy terms
+					if (null != src.getHarvestStatus()) {
+						searchDoc.setModified(src.getHarvestStatus().getHarvested()); // the last time the source was harvested - can use to determine how far back to go
+					}
 					// If these exist (they won't normally), fill them:
 					searchDoc.setFullText(currFullText);
 					searchDoc.setDescription(currDesc);
@@ -198,7 +253,7 @@ public class FeedHarvester_searchEngineSubsystem {
 			// Create extraUrl entries from the metadata
 			
 					Object[] searchResults = searchDoc.getMetaData().get("searchEngineSubsystem");
-					if (null != searchResults) {
+					if ((null != searchResults) && (searchResults.length > 0)) {
 						for (Object searchResultObj: searchResults) {
 							try {
 								BasicDBObject bsonObj = (BasicDBObject)searchResultObj;
@@ -206,8 +261,9 @@ public class FeedHarvester_searchEngineSubsystem {
 								// 3 fields: url, title, description(=optional)
 								String linkUrl = bsonObj.getString(DocumentPojo.url_);
 								
+								nLinksFound++;
 								if (!dedupSet.contains(linkUrl)) {
-									dedupSet.add(linkUrl);
+									dedupSet.add(linkUrl);									
 								
 									String linkTitle = bsonObj.getString(DocumentPojo.title_);
 									String linkDesc = bsonObj.getString(DocumentPojo.description_);
@@ -222,9 +278,9 @@ public class FeedHarvester_searchEngineSubsystem {
 										link.description = linkDesc;
 										link.publishedDate = linkPubDate;
 										link.fullText = linkFullText;
-										if ((null != itUrls) && (null != spiderOut) && spiderOut.equalsIgnoreCase("true")) { 
+										if (!stopLinkFollowing && (null != itUrls) && (null != spiderOut) && spiderOut.equalsIgnoreCase("true")) { 
 											// In this case, add it back to the original list for chained processing
-											
+						
 											if (null == waitingList) {
 												waitingList = new LinkedList<ExtraUrlPojo>();
 											}
@@ -233,12 +289,26 @@ public class FeedHarvester_searchEngineSubsystem {
 											 	//  dedupSet.size() and only allow links not already in dedupSet)
 											
 										} //TESTED
+
 										if (null != linkTitle) {
 											
-											if (null == feedConfig.getExtraUrls()) {
-												feedConfig.setExtraUrls(new ArrayList<ExtraUrlPojo>(searchResults.length));
+											boolean isDuplicate = false;
+											if (!stopPaginating && searchConfig.getStopPaginatingOnDuplicate()) {
+												// Quick duplicate check (full one gets done later)
+												isDuplicate = context.getDuplicateManager().isDuplicate_Url(linkUrl, src, null);
+											}//TESTED											
+											if (!isDuplicate) {
+												if (null == feedConfig.getExtraUrls()) {
+													feedConfig.setExtraUrls(new ArrayList<ExtraUrlPojo>(searchResults.length));
+												}
+												feedConfig.getExtraUrls().add(link);
 											}
-											feedConfig.getExtraUrls().add(link);											
+											else {
+												stopPaginating = true;
+												if (null == feedConfig.getSearchConfig().getPageChangeRegex()) {
+													stopLinkFollowing = true;
+												}//TESTED											
+											}//TESTED
 										}
 										
 									}
@@ -251,11 +321,55 @@ public class FeedHarvester_searchEngineSubsystem {
 							}
 						}
 					}//TESTED
+					else if (0 == nPage) { //returned no links, log an error if this is page 1 and one has been saved
+						Object[] onError = searchDoc.getMetaData().get("_ONERROR_");
+						if ((null != onError) && (onError.length > 0)) {
+							context.getHarvestStatus().logMessage("_ONERROR_: " + onError[0], true);						
+						}
+					}//TESTED
 
+					if (context.isStandalone()) { // debug mode, will display some additional logging
+						Object[] onDebug = searchDoc.getMetaData().get("_ONDEBUG_");
+						if ((null != onDebug) && (onDebug.length > 0)) {
+							for (Object debug: onDebug) {
+								if (debug instanceof String) {
+									context.getHarvestStatus().logMessage("_ONDEBUG_: " + (String)debug, true);															
+								}
+								else {
+									context.getHarvestStatus().logMessage("_ONDEBUG_: " + new com.google.gson.Gson().toJson(debug), true);
+								}
+							}
+						}
+					}//TESTED
+					
+					// PAGINGATION BREAK LOGIC:
+					// 1: All the links are duplicates of links already in the DB
+					// 2: No new links from last page
+					
+					// LOGIC CASE 1: (All the links are duplicates of links already in the DB)
+					 
+					//(already handled above)
+					
+					// LOGIC CASE 2: (No new links from last page)
+					
 					//DEBUG
 					//System.out.println("LINKS_SIZE=" + feedConfig.getExtraUrls().size());
 					//System.out.println("LINKS=\n"+new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(feedConfig.getExtraUrls()));
-				
+							
+					if (dedupSet.size() == nCurrDedupSetSize) { // All links were duplicate
+						//DEBUG
+						//System.out.println("FOUND " + nLinksFound + " vs " + nMinLinksToExitLoop + " duplicate URLs (" + nCurrDedupSetSize + ")");
+						if (nLinksFound >= nMinLinksToExitLoop) { // (at least 10 found so insta-quit)
+							break;							
+						}
+						else { // (fewer than 10 found - includ
+							nMinLinksToExitLoop = 0; // (also handles the no links found case)
+						}
+					}//TESTED
+					else {
+						nMinLinksToExitLoop = 10; // (reset)
+					}//TESTED
+					
 				}// end loop over pages
 				
 			}
@@ -267,7 +381,9 @@ public class FeedHarvester_searchEngineSubsystem {
 				// Fix any temp changes we made to the source
 				src.setUnstructuredAnalysisConfig(savedUAHconfig);
 				feedConfig.setUserAgent(savedUserAgent);
+				feedConfig.setHttpFields(savedHttpFields);
 				feedConfig.setWaitTimeOverride_ms(savedWaitTimeOverride_ms);
+				feedConfig.setProxyOverride(savedProxyOverride);
 			}			
 			if (null == itUrls) {
 				break;		

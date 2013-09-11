@@ -16,6 +16,8 @@
 package com.ikanow.infinit.e.api.knowledge.processing;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,57 +27,90 @@ import java.util.regex.Pattern;
 
 import org.elasticsearch.client.action.search.SearchRequestBuilder;
 import org.elasticsearch.index.query.BoolFilterBuilder;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.CrossVersionQueryBuilders;
+import org.elasticsearch.index.query.FilterBuilders;
+import org.elasticsearch.index.query.NestedFilterBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.index.query.QueryFilterBuilder;
 import org.elasticsearch.index.search.geo.GeoHashUtils;
 import org.elasticsearch.search.facet.Facet;
 import org.elasticsearch.search.facet.FacetBuilders;
 import org.elasticsearch.search.facet.datehistogram.DateHistogramFacet;
+import org.elasticsearch.search.facet.datehistogram.DateHistogramFacet.Entry;
 import org.elasticsearch.search.facet.datehistogram.DateHistogramFacetBuilder;
 import org.elasticsearch.search.facet.terms.TermsFacet;
 import org.elasticsearch.search.facet.terms.TermsFacetBuilder;
 
 import com.ikanow.infinit.e.api.knowledge.QueryHandler;
+import com.ikanow.infinit.e.api.knowledge.aliases.AliasLookupTable;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.knowledge.AdvancedQueryPojo;
 import com.ikanow.infinit.e.data_model.api.knowledge.GeoAggregationPojo;
 import com.ikanow.infinit.e.data_model.api.knowledge.AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo;
 import com.ikanow.infinit.e.data_model.store.document.AssociationPojo;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
+import com.ikanow.infinit.e.data_model.store.document.EntityPojo;
+import com.ikanow.infinit.e.data_model.store.feature.entity.EntityFeaturePojo;
 import com.ikanow.infinit.e.data_model.utils.GeoOntologyMapping;
 import com.mongodb.BasicDBObject;
 
 public class AggregationUtils {
+	
+	// Utilty class:
+	
+	public static class GeoContainer {
+		public Set<GeoAggregationPojo> geotags;
+		public long minCount = 0;
+		public long maxCount = 0;
+	}
 	
 	////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	
 	// OUTPUT PARSING - TOP LEVEL
 	
-	public static void loadAggregationResults(ResponsePojo rp, Map<String, Facet> facets, AggregationOutputPojo aggOutParams, ScoringUtils scoreStats)
+	public static void loadAggregationResults(ResponsePojo rp, Map<String, Facet> facets, AggregationOutputPojo aggOutParams, 
+												ScoringUtils scoreStats, AliasLookupTable aliasLookup,
+												String[] entityTypeFilterStrings, String[] assocVerbFilterStrings,
+												AggregationUtils.GeoContainer extraAliasAggregatedGeo)
 	{
+		HashMap<String, List<? extends Entry>> moments = null;
+		
 		for (Map.Entry<String, Facet> facet: facets.entrySet()) {
 			
 			// Geo
 			
 			if (facet.getKey().equals("geo")) {
 				TermsFacet geoFacet = (TermsFacet)facet.getValue();
-				Set<GeoAggregationPojo> geoCounts = new TreeSet<GeoAggregationPojo>();
+				Set<GeoAggregationPojo> geoCounts = null;
 				int nHighestCount = -1;
 				int nLowestCount = Integer.MAX_VALUE;
-				for (TermsFacet.Entry geo: geoFacet.entries()) {
-					if (nHighestCount < 0) { // First time
-						nHighestCount = geo.count();
-					}
-					if (geo.count() < nLowestCount) {
-						nLowestCount = geo.count();
-					}
-										
+				// If we've got some geotags from the alias masters then start with them:
+				if ((null != extraAliasAggregatedGeo) && (null != extraAliasAggregatedGeo.geotags)) {
+					geoCounts = extraAliasAggregatedGeo.geotags;
+					nHighestCount = (int) extraAliasAggregatedGeo.minCount;
+					nLowestCount = (int) extraAliasAggregatedGeo.maxCount;
+				}
+				else {
+					geoCounts = new TreeSet<GeoAggregationPojo>();					
+				}
+				for (TermsFacet.Entry geo: geoFacet.entries()) {										
 					String geohash = geo.term().substring(2);
 					double[] loc =  GeoHashUtils.decode(geohash);
 					GeoAggregationPojo geoObj = new GeoAggregationPojo(loc[0],loc[1]);
 					geoObj.count = geo.count();
 					geoObj.type = GeoOntologyMapping.decodeOntologyCode(geo.term().charAt(0));
-					geoCounts.add(geoObj); 
-					// (There's a failure case here because geohashes can map to the same lat/long - at least they'll be colocated so the GUI can sort it out)
+					geoCounts.add(geoObj);
+					// (note this aggregates geo points whose decoded lat/logns are the same, which can result in slightly fewer records than requested)
+					// (note the aggregation writes the aggregated count into geoObj.count)
+					
+					if (geoObj.count > nHighestCount) { // (the counts can be modified by the add command above)
+						nHighestCount = geo.count();
+					}
+					if (geoObj.count < nLowestCount) {
+						nLowestCount = geo.count();
+					}
 				}
 				rp.setGeo(geoCounts, nHighestCount, nLowestCount);
 			}//(TESTED)
@@ -87,11 +122,11 @@ public class AggregationUtils {
 			
 			if (facet.getKey().equals("events")) {
 				TermsFacet eventsFacet = (TermsFacet)facet.getValue();
-				rp.setEvents(parseEventAggregationOutput("Event", eventsFacet, scoreStats));
+				rp.setEvents(parseEventAggregationOutput("Event", eventsFacet, scoreStats, aliasLookup, entityTypeFilterStrings, assocVerbFilterStrings));
 			}					
 			if (facet.getKey().equals("facts")) {
 				TermsFacet factsFacet = (TermsFacet)facet.getValue();
-				rp.setFacts(parseEventAggregationOutput("Fact", factsFacet, scoreStats));
+				rp.setFacts(parseEventAggregationOutput("Fact", factsFacet, scoreStats, aliasLookup, entityTypeFilterStrings, assocVerbFilterStrings));
 			}					
 			//TESTED x2
 			
@@ -108,21 +143,35 @@ public class AggregationUtils {
 				rp.setSources(keysFacet.entries());
 			}
 			//TESTED x3
-		}		
+			
+			// Moments (basic functionality)
+			
+			if (facet.getKey().startsWith("moments.")) {
+				DateHistogramFacet momentFacet = (DateHistogramFacet) facet.getValue();
+				if (null == moments) {
+					moments = new HashMap<String, List<? extends Entry>>();
+				}
+				moments.put(facet.getKey().substring(8), momentFacet.entries());
+			}//TESTED
+				
+		}//(end loop over generated facets)	
+		
+		if ((null != moments) && !moments.isEmpty()) {
+			rp.setMoments(moments, QueryHandler.getInterval(aggOutParams.moments.timesInterval, 'm'));
+		}
+		
 	}//TESTED
 	
 	////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	
 	// OUTPUT PARSING - UTILS:
 	
-	public static void parseOutputAggregation(AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo aggregation,
+	public static void parseOutputAggregation(AdvancedQueryPojo.QueryOutputPojo.AggregationOutputPojo aggregation, AliasLookupTable aliasLookup,
 			String[] entTypeFilterStrings, String[] assocVerbFilterStrings, SearchRequestBuilder searchSettings, BoolFilterBuilder parentFilterObj)
 	{
 		// 1.] Go through aggregation list
 		
 		// 1.1] Apply "simple specifications" if necessary
-		
-		 //TODO (INF-1230): return a set of facet name vs aggregation term?
 		
 		// Geo
 		
@@ -146,9 +195,72 @@ public class AggregationUtils {
 			if (null != parentFilterObj) {
 				fb = fb.facetFilter(parentFilterObj);
 			}
-			searchSettings.addFacet(fb);					
+			searchSettings.addFacet(fb);
 		}//(TESTED)
 
+		// Temporal Moments
+		
+		if ((null != aggregation) && (null != aggregation.moments)) {
+			if (null == aggregation.moments.timesInterval) {
+				if (null != aggregation.timesInterval) {
+					aggregation.moments.timesInterval = aggregation.timesInterval;
+				}
+				else {
+					aggregation.moments.timesInterval = "m";					
+				}
+			}
+			if (aggregation.moments.timesInterval.contains("m")) {
+				aggregation.moments.timesInterval = "month";
+			}
+			
+			if (null != aggregation.moments.entityList) {
+				for (String entIndex: aggregation.moments.entityList) {
+					
+					DateHistogramFacetBuilder fb = FacetBuilders.dateHistogramFacet("moments." + entIndex).
+													field(DocumentPojo.publishedDate_).interval(aggregation.moments.timesInterval);
+					
+					EntityFeaturePojo alias = null;
+					if (null != aliasLookup) {
+						alias = aliasLookup.getAliases(entIndex);
+					}
+					if (null == alias) { // no alias
+						fb = fb.facetFilter(FilterBuilders.nestedFilter(DocumentPojo.entities_, 
+											FilterBuilders.termFilter(EntityPojo.index_, entIndex)));
+					}//TESTED
+					else {
+						QueryFilterBuilder qfb = null;
+						if ((null != alias.getSemanticLinks()) && !alias.getSemanticLinks().isEmpty())  {
+							BoolQueryBuilder qb = QueryBuilders.boolQuery();
+							for (String textAlias: alias.getSemanticLinks()) {
+								qb = qb.should(CrossVersionQueryBuilders.matchPhraseQuery(DocumentPojo.fullText_, textAlias));
+							}
+							qfb = FilterBuilders.queryFilter(qb);							
+						}//TESTED
+						if (!alias.getAlias().isEmpty()) {
+							NestedFilterBuilder nfb = FilterBuilders.nestedFilter(DocumentPojo.entities_, 
+													FilterBuilders.termsFilter(EntityPojo.index_, entIndex, alias.getAlias()));
+							if (null == qfb) {
+								fb = fb.facetFilter(nfb);
+							}//TESTED
+							else {
+								BoolFilterBuilder bfb = FilterBuilders.boolFilter().should(nfb).should(qfb);
+								fb = fb.facetFilter(bfb);
+							}//TESTED
+						}
+						else if (null != qfb) {
+							fb = fb.facetFilter(qfb);
+						}//TESTED
+					}//TESTED
+					
+					// Gross raw handling for facets
+					if (null != parentFilterObj) {
+						fb = fb.facetFilter(parentFilterObj);
+					}
+					searchSettings.addFacet(fb);
+				}
+			}//(end list over entities)
+		}//TESTED
+		
 		// Entities - due to problems with significance, handled on a document by document basis, see Significance helper class
 		
 		// Associations (Events/Facts)
@@ -162,22 +274,55 @@ public class AggregationUtils {
 			((null != aggregation) && (null != aggregation.factsNumReturn) && (aggregation.factsNumReturn > 0)))
 		{
 			if (null != entTypeFilterStrings) {
-				entTypeRegex = new StringBuilder("(?:");
+				boolean bNegative = false;
+				if ('-' != entTypeFilterStrings[0].charAt(0)) { // positive filtering
+					entTypeRegex = new StringBuilder("(?:");
+				}
+				else {
+					bNegative = true;
+					entTypeRegex = new StringBuilder("(?!");
+						// (this is a lookahead but will be fine because of the .*/ in front of it)
+				}
 				for (String entType: entTypeFilterStrings) {
-					entTypeRegex.append(".*?/").append(entType.toLowerCase()).append('|');
+					if (bNegative && ('-' == entType.charAt(0))) {
+						entType = entType.substring(1);
+					}
+					entType = entType.replace("|", "%7C");
+					entTypeRegex.append(".*?/").append(Pattern.quote(entType.toLowerCase())).append('|');
+						// (can't match greedily because of the 2nd instance of entity type)
 				}
 				entTypeRegex.setLength(entTypeRegex.length() - 1); // (remove trailing |)
 				entTypeRegex.append(")");
-			}//TESTED
+				if (bNegative) {
+					entTypeRegex.append("[^|]*"); // (now the actual verb, if a -ve lookahead)					
+				}
+				
+			}//TESTED 
 			
 			if (null != assocVerbFilterStrings) {
-				
-				verbCatRegex = new StringBuilder("\\|(?:");
+				boolean bNegative = false;
+				if ('-' != assocVerbFilterStrings[0].charAt(0)) { // positive filtering
+					verbCatRegex = new StringBuilder("\\|(?:");
+				}
+				else {
+					bNegative = true;
+					verbCatRegex = new StringBuilder("\\|(?!");
+						// (this is a lookahead but will be fine because of the "^[^|]*\\" in front of it)
+					
+					// eg say I have -VERB then subject|VERB|object will match because if the 
+				}				
 				for (String assocVerbFilterString: assocVerbFilterStrings) {
-					verbCatRegex.append(assocVerbFilterString).append('|');
+					if (bNegative && ('-' == assocVerbFilterString.charAt(0))) {						
+						assocVerbFilterString = assocVerbFilterString.substring(1);
+					}
+					assocVerbFilterString = assocVerbFilterString.replace("|", "%7C");
+					verbCatRegex.append(Pattern.quote(assocVerbFilterString)).append('|');
 				}
 				verbCatRegex.setLength(verbCatRegex.length() - 1); // (remove trailing |)
 				verbCatRegex.append(")");
+				if (bNegative) {
+					verbCatRegex.append("[^|]*"); // (now the actual verb, if a -ve lookahead)
+				}
 			}//TESTED
 		}
 		//TESTED (all combinations of 1/2 people, 1/2 verbs)			
@@ -194,12 +339,21 @@ public class AggregationUtils {
 			if (null != verbCatRegex) {
 				regex.append(verbCatRegex);
 			}
+			else if (null != entTypeRegex) {
+				regex.append("\\|[^|]*");				
+			}
+			else {
+				regex.append(".*");				
+			}
 			if (null != entTypeRegex) {
 				regex.append("\\|").append(entTypeRegex);				
+				regex.append(".*");
 			}
 			else {
 				regex.append("\\|.*");
 			}
+			//DEBUG
+			//System.out.println("REGEX==" + regex.toString());			
 			//TESTED (all combinations of 1/2 people, 1/2 verbs)			
 			
 			TermsFacetBuilder fb = FacetBuilders.termsFacet("events").field(AssociationPojo.assoc_index_).size(aggregation.eventsNumReturn).nested(DocumentPojo.associations_);
@@ -223,14 +377,23 @@ public class AggregationUtils {
 			if (null != verbCatRegex) {
 				regex.append(verbCatRegex);
 			}
+			else if (null != entTypeRegex) {
+				regex.append("\\|[^|]*");				
+			}
+			else {
+				regex.append(".*");				
+			}
 			if (null != entTypeRegex) {
 				regex.append("\\|").append(entTypeRegex);				
+				regex.append(".*");
 			}
 			else {
 				regex.append("\\|.*");
 			}
+			//DEBUG
+			//System.out.println("REGEX==" + regex.toString());			
 			//TESTED (all combinations of 1/2 people, 1/2 verbs)			
-			
+						
 			TermsFacetBuilder fb = FacetBuilders.termsFacet("facts").field(AssociationPojo.assoc_index_).size(aggregation.factsNumReturn).nested(DocumentPojo.associations_);
 			fb.regex(regex.toString());
 			
@@ -270,9 +433,14 @@ public class AggregationUtils {
 	
 	private static Pattern eventIndexParser = Pattern.compile("([^|]+/[^/|]+)?\\|([^|]+)?\\|([^|]+/[^|/]+)?\\|(.+)?");
 	
-	private static List<BasicDBObject> parseEventAggregationOutput(String sEventOrFact, TermsFacet facet, ScoringUtils scoreStats) {
+	private static List<BasicDBObject> parseEventAggregationOutput(String sEventOrFact, TermsFacet facet, 
+																	ScoringUtils scoreStats, AliasLookupTable aliasLookup,
+																	String[] entityTypeFilterStrings, String[] assocVerbFilterStrings)
+	{
 		ArrayList<BasicDBObject> facetList = new ArrayList<BasicDBObject>(facet.entries().size());
 		
+		// (These 2 might be needed if we alias and there are filter strings specified)
+		HashSet<String> entTypeFilter = null;		
 		//TEST CASES:
 //		String term1 = "mark kelly/person|family relation|gabrielle giffords/person|";
 //		String term2 = "|family relation|gabrielle giffords/person|";
@@ -283,6 +451,9 @@ public class AggregationUtils {
 
 		int nFacetEl = 0;
 		for (TermsFacet.Entry facetEl: facet.entries()) {
+			//DEBUG
+			//System.out.println("TERM= " + facetEl.getTerm());
+			
 			String term = facetEl.getTerm().substring(sEventOrFact.length() + 1); // (step over "Fact|" or "Event|"
 			//TEST CASES:
 //			if (nFacetEl < terms.size()) {
@@ -295,13 +466,19 @@ public class AggregationUtils {
 				BasicDBObject json = new BasicDBObject();				
 				json.put(AssociationPojo.assoc_type_, sEventOrFact);
 				String sEnt1_index = m.group(1);
-				if (null != sEnt1_index) json.put(AssociationPojo.entity1_index_, sEnt1_index.replaceAll("%7C", "|"));
+				if (null != sEnt1_index) {
+					sEnt1_index = sEnt1_index.replaceAll("%7C", "|");
+				}
 				String sVerbCat = m.group(2);
 				if (null != sVerbCat) json.put(AssociationPojo.verb_category_, sVerbCat.replaceAll("%7C", "|"));
 				String sEnt2_index = m.group(3);
-				if (null != sEnt2_index) json.put(AssociationPojo.entity2_index_, sEnt2_index.replaceAll("%7C", "|"));
+				if (null != sEnt2_index) {
+					sEnt2_index = sEnt2_index.replaceAll("%7C", "|");
+				}
 				String sGeoIndex = m.group(4);
-				if (null != sGeoIndex) json.put(AssociationPojo.geo_index_, sGeoIndex.replaceAll("%7C", "|"));
+				if (null != sGeoIndex) {
+					sGeoIndex = sGeoIndex.replaceAll("%7C", "|");
+				}
 				json.put(AssociationPojo.doccount_, facetEl.getCount());				
 				
 				// Add significance if possible
@@ -313,6 +490,69 @@ public class AggregationUtils {
 					// Mandatory:
 					json.put(AssociationPojo.assoc_sig_, 0.0);
 				}				
+				
+				boolean bTransformedByAlias = false; // when true need to re-check vs entity type filter
+				
+				// Now write the last few values (adjusted for aliases if necessary) into the JSON object
+				if (null != sEnt1_index) {
+					if (null != aliasLookup) {
+						EntityFeaturePojo alias = aliasLookup.getAliasMaster(sEnt1_index);
+						if (null != alias) {
+							sEnt1_index = alias.getIndex();
+							if (sEnt1_index.equalsIgnoreCase("discard")) {
+								continue;
+							}//TESTED
+							bTransformedByAlias = true;
+						}
+					}					
+					json.put(AssociationPojo.entity1_index_, sEnt1_index);
+				}
+				if (null != sEnt2_index) {
+					if (null != aliasLookup) {
+						EntityFeaturePojo alias = aliasLookup.getAliasMaster(sEnt2_index);
+						if (null != alias) {
+							sEnt2_index = alias.getIndex();
+							if (sEnt2_index.equalsIgnoreCase("discard")) {
+								continue;
+							}//TESTED (cut and paste of ent index1)
+							bTransformedByAlias = true;
+						}						
+					}					
+					json.put(AssociationPojo.entity2_index_, sEnt2_index);					
+				}
+				if (null != sGeoIndex) {
+					if (null != aliasLookup) {
+						EntityFeaturePojo alias = aliasLookup.getAliasMaster(sGeoIndex);
+						if (null != alias) {
+							sGeoIndex = alias.getIndex();
+							if (sGeoIndex.equalsIgnoreCase("discard")) {
+								if ((sEnt1_index != null) && (sEnt2_index != null)) {
+									sGeoIndex = null; // event/fact is still valid even without the geo									
+								}//TESTED
+								else continue; // event/fact now meaningless
+							}
+							bTransformedByAlias = true;
+						}						
+					}					
+					json.put(AssociationPojo.geo_index_, sGeoIndex);										
+				}				
+				//TESTED
+				
+				//Whenever aliases are applied, need to re-check whether is this now a filter item
+				//ideally have a single code block for doing this in scoringutils_association.
+				if (bTransformedByAlias) {
+					if ((null == entTypeFilter) && (null != entityTypeFilterStrings)) {
+						entTypeFilter = new HashSet<String>();
+					}
+					// (only create the map once, and only if needed)
+					
+					boolean bKeep = recheckFiltersAfterTransform(json, aliasLookup, entityTypeFilterStrings, entTypeFilter);
+					
+					if (!bKeep) {
+						continue; // ie just bypass the facetList.add and the nFacetEl
+					}
+				}//TESTED
+				
 				facetList.add(json);
 			}
 			nFacetEl++;
@@ -320,4 +560,32 @@ public class AggregationUtils {
 		return facetList;		
 	}//TESTED (see cases above - difficult to make this test case standalone because of TermsFacet.Entry)
 		
+	//////////////////////////////////
+	
+	// Utility:
+	
+	private static boolean recheckFiltersAfterTransform(BasicDBObject json, AliasLookupTable aliasLookup,
+			String[] entityTypeFilterStrings, HashSet<String> entTypeFilter)
+	{
+		// (approximate copy paste from ScoringUtils to initialize these objects:)
+		boolean bEntTypeFilterPositive = true; // (will recreate this every time since it's so cheap and passsing by ref is such a pain in Java)
+		
+		if (null != entityTypeFilterStrings) {
+			
+			if ('-' == entityTypeFilterStrings[0].charAt(0)) {
+				bEntTypeFilterPositive = false;
+			}
+			if (entTypeFilter.isEmpty()) {// (first time through per call only)
+				for (String entityType: entityTypeFilterStrings) {
+					if (!bEntTypeFilterPositive && ('-' == entityType.charAt(0))) {
+						entityType = entityType.substring(1);
+					}
+					entTypeFilter.add(entityType.toLowerCase());
+				}
+			}
+		}
+		// (Only need to re-filter on entities)
+		return ScoringUtils_Associations.filterAndAliasAssociation(json, null, false, bEntTypeFilterPositive, true, entTypeFilter, null);		
+	}//TESTED
+	
 }

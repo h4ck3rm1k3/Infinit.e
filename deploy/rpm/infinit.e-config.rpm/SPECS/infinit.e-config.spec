@@ -187,7 +187,7 @@ Infinit.e system configuration
 /mnt/opt/infinite-home/scripts/APITimeAlert.python
 /mnt/opt/infinite-home/scripts/WeeklyExtractorStatus.python
 /mnt/opt/infinite-home/scripts/WeeklyAPITimeStatus.python
-/mnt/opt/infinite-home/scripts/APINumResultsCheck.sh
+%config /mnt/opt/infinite-home/scripts/APINumResultsCheck.sh
 /mnt/opt/infinite-home/scripts/rewrite_property_files.sh
 /mnt/opt/infinite-home/scripts/set_cluster.sh
 %attr(-,root,root) /etc/cron.d/infinite-logging
@@ -195,6 +195,7 @@ Infinit.e system configuration
 # (Splunk config)
 %dir %attr(-,splunk,splunk) /mnt/opt/splunk-infinite
 %config %attr(-,splunk,splunk) /opt/splunk/etc/apps/search/local/inputs.conf
+%config %attr(-,splunk,splunk) /opt/splunk/etc/system/local/web.conf
 %config %attr(755,root,root) /etc/init.d/splunk
 
 # S3 config

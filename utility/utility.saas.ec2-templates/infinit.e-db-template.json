@@ -5,6 +5,13 @@
 
 	"Parameters" : {
 		
+		"ImageName" : {
+			"Description" : "MANDATORY: Infinit.e EC2 image id: ami-69a62000 (4x400GB eph), ami-df5c2ab6 (4x250GB EBS), ami-7d582e14 (root=200GB EBS)",
+			"Type" : "String",
+			"Default" : "ami-df5c2ab6",
+			"AllowedValues" : [ "ami-69a62000", "ami-df5c2ab6", "ami-7d582e14" ],
+			"ConstraintDescription" : "ami-69a62000 (4x400GB eph), ami-df5c2ab6 (4x250GB EBS), ami-7d582e14 (root=200GB EBS)"
+		},
 		"NodeName" : {
 			"Description" : "MANDATORY: The name used to display the node in the EC2 instances list (eg <projectname>-<function>-node. It is recommended that this be given the same name as the stack.",
 			"Type" : "String"
@@ -95,7 +102,7 @@
 			
 			"Properties" : {
 				
-				"ImageId" : "ami-71954d18",
+				"ImageId" : { "Ref": "ImageName" },
 				"InstanceType": { "Ref": "InstanceType" },
 				"KeyName": { "Ref": "KeyName" },
 				"SecurityGroups": [ { "Ref": "SecurityGroups" } ],
@@ -128,28 +135,27 @@
 						"Fn::Join": [ "", ["cd /etc/yum.repos.d;",						                   
 						                   
 							                   "curl -O 'http://www.ikanow.com/infinit.e-preinstall/ikanow.repo';",
+							                   "curl -O 'http://www.ikanow.com/infinit.e-preinstall/ikanow-infinite.repo';",
 							                   "ls /dev/* | grep -q '/dev/sde' && yum install -y infinit.e-raid-amazon;",
 							                   "yum install -y infinit.e-platform.prerequisites.online;",
 							                   
-							                   "curl -O 'http://s3tools.org/repo/CentOS_5/s3tools.repo';", "yum -y install s3cmd;", 
-
+								           "cd /opt/infinite-install/; ",						                   
+							               	   "sh install.sh dbnode ", { "Ref": "QuickInstall" }, ";",
+						                   
 						                   "cd /opt/infinite-install/config; ",						                   
 							                   "echo ", { "Ref": "AwsAccessId" }, " > s3;", 
 							                   "echo ", { "Ref": "AwsAccessKey" }, " >> s3;",
 							                   "for i in `seq 1 4`; do echo '' >> s3; done;",
 							                   "echo n >> s3; echo y >> s3; echo n >> s3;",
-							                   "s3cmd --configure < s3; rm -f s3;",
+							                   "s3cmd --configure -c /tmp/s3cfg < s3; rm s3;",
 							                   
-							                   "s3cmd get ", { "Ref": "ConfigFileS3Path" }, ";",
+							                   "s3cmd -c /tmp/s3cfg get ", { "Ref": "ConfigFileS3Path" }, "; rm -f /tmp/s3cfg; ",
 							                   
-							               "cd /opt/infinite-install/; ",						                   
-							               	   "sh install.sh dbnode ", { "Ref": "QuickInstall" }, ";",
-						                   
 							               "yum -y --nogpgcheck install infinit.e-config;",    
 							               "yum -y --nogpgcheck install infinit.e-db-instance;",
 						                   
-						                   "sed -i 's/^curl/#curl/' /etc/rc.local"    
-					}
+						                   "sed -i 's/^curl/#curl/' /etc/rc.d/rc.local"    
+							               ]]}
 				}
 			}
 		}

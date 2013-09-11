@@ -1,4 +1,5 @@
 <!--
+//TODO have a copy widget function
 Copyright 2012 The Infinit.e Open Source Project
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -417,9 +418,6 @@ limitations under the License.
             output.close();
             responseStream.close();
             
-            /**/
-            System.out.println("JSON! " + json);
-            
             modResponse mr = new Gson().fromJson(json, modResponse.class);
     		if (mr == null)
     		{
@@ -529,6 +527,7 @@ limitations under the License.
 				return false;
 			}
 				//return "Json was null: " + json + "\n " + API_ROOT + "social/share/add/community/" + URLEncoder.encode(shareId,charset) + "/" + URLEncoder.encode(communityId,charset) + "/" + URLEncoder.encode(comment,charset) + "/";
+
 			if(DEBUG_MODE)
 				System.out.println("Share: " + shareId + "   CommunityId: " + communityId + " Shared:" + gm.response.success + "  Message: " + gm.response.message);
 			return gm.response.success;
@@ -704,7 +703,14 @@ h2
 	color: #d2331f;
 	margin-bottom: 25px;
 }
-
+.show {
+display: ;
+visibility: visible;
+}
+.hide {
+display: none;
+visibility: hidden;
+}
 </style>
 <script language="javascript" src="AppConstants.js"> </script>
 </head>
@@ -835,7 +841,7 @@ else if (isLoggedIn == true)
 	 			
 	 			out.println(deleteWidget(request.getAttribute("deleteId").toString(), request, response));
 	 		}
-	 		else
+	 		else // Install widget
 	 		{
 	 		
 		 	//////////////////////////////////////////////////////////////////////////////////
@@ -944,14 +950,15 @@ else if (isLoggedIn == true)
 								fileId = AddToShare(fileBytes, fileDS, request.getAttribute("title").toString(),request.getAttribute("description").toString(), request, response);
 							else
 							{
-								UpdateToShare(fileBytes, fileDS, request.getAttribute("title").toString(),request.getAttribute("description").toString(), fileId, request, response);
-								removeShareFromAllUserCommunities(fileId, request, response);
+								fileId = UpdateToShare(fileBytes, fileDS, request.getAttribute("title").toString(),request.getAttribute("description").toString(), fileId, request, response);
+								if (!fileId.contains("Failed"))
+									removeShareFromAllUserCommunities(fileId, request, response);
 							}
 						}
 						if (fileId.contains("Failed"))
 						{
 							removeFromShare(iconId, request, response);
-							out.println("SWF File Upload Failed. Please Try again.");
+							out.println("SWF File Upload Failed. Please Try again: " + fileId);
 							fileUrl = null;
 						}
 						else
@@ -1027,16 +1034,24 @@ else if (isLoggedIn == true)
 					else
 						DBId = request.getAttribute("DBId").toString();
 					
-					out.println(sendWidgetToDb(request.getAttribute("title").toString(), request.getAttribute("description").toString(), request.getAttribute("version").toString(), fileUrl, iconUrl, DBId, created,communities, request, response));
 					
+					String retval = sendWidgetToDb(request.getAttribute("title").toString(), request.getAttribute("description").toString(), request.getAttribute("version").toString(), fileUrl, iconUrl, DBId, created,communities, request, response);
 					
+					if (!retval.contains("Widget Uploaded Successfully") && newWidget)
+					{
+						removeFromShare(fileId, request, response);
+						removeFromShare(iconId, request, response);
+						out.println("Upload Failed - file and icon shares deleted: " + retval);						
+					}		
+					else 
+						out.println(retval);
 					
 				}
 				else
 				{
 					removeFromShare(fileId, request, response);
 					removeFromShare(iconId, request, response);
-					out.println("Upload Failed");
+					out.println("Upload Failed - file and icon shares deleted: invalid entry");
 				}	
 				
 				out.println("</div>");
@@ -1076,25 +1091,25 @@ else if (isLoggedIn == true)
 		function populate()
 		{
 	
-			title = document.getElementById('title');
-			description = document.getElementById('description');
-			file = document.getElementById('file');
-			icon = document.getElementById('icon');
-			version = document.getElementById('version');
-			created = document.getElementById('created');
-			DBId = document.getElementById('DBId');
-			deleteId = document.getElementById('deleteId');
-			deleteFile = document.getElementById('deleteFile');
-			deleteIcon = document.getElementById('deleteIcon');
-			imageUrl = document.getElementById('imageUrl');
-			swfUrl = document.getElementById('swfUrl');
-			icon_check = document.getElementById('icon_check');
-			file_check = document.getElementById('file_check');
-			file_url = document.getElementById('file_url');
-			icon_url = document.getElementById('icon_url');
-			deleteButton = document.getElementById('deleteButton');
-			owner_text = document.getElementById('owner_text');
-			owner = document.getElementById('owner');
+			var title = document.getElementById('title');
+			var description = document.getElementById('description');
+			var file = document.getElementById('file');
+			var icon = document.getElementById('icon');
+			var version = document.getElementById('version');
+			var created = document.getElementById('created');
+			var DBId = document.getElementById('DBId');
+			var deleteId = document.getElementById('deleteId');
+			var deleteFile = document.getElementById('deleteFile');
+			var deleteIcon = document.getElementById('deleteIcon');
+			var imageUrl = document.getElementById('imageUrl');
+			var swfUrl = document.getElementById('swfUrl');
+			var icon_check = document.getElementById('icon_check');
+			var file_check = document.getElementById('file_check');
+			var file_url = document.getElementById('file_url');
+			var icon_url = document.getElementById('icon_url');
+			var deleteButton = document.getElementById('deleteButton');
+			var owner_text = document.getElementById('owner_text');
+			var owner = document.getElementById('owner');
 			
 			
 			dropdown = document.getElementById("upload_info");
@@ -1116,12 +1131,25 @@ else if (isLoggedIn == true)
 				icon_url.value = "";
 				icon_check.checked = false;
 				file_check.checked = false;
-				owner.style.display = 'none';
-				owner_text.style.display = 'none';
-				deleteButton.style.visibility = 'hidden';
+				owner.className = "hide";
+				owner_text.className = "hide";
+				deleteButton.className = "hide";
 				useUrlSwf();
 				useUrlIcon();
 				clearCommList();
+				return;
+			}
+			else if (list == "copy")
+			{
+				title.value = title.value + " (COPY)";
+				DBId.value = "";
+				deleteId.value = "";
+				deleteFile.value = "";
+				deleteIcon.value = "";
+				
+				owner.className = "hide";
+				owner_text.className = "hide";
+				deleteButton.className = "hide";
 				return;
 			}
 			//_id,url,title,description,created,modified,version,imageurl,communities
@@ -1155,9 +1183,9 @@ else if (isLoggedIn == true)
 			owner.value = res_author;
 			useUrlSwf();
 			useUrlIcon();
-			deleteButton.style.visibility = '';
-			owner.style.display = '';
-			owner_text.style.display = '';
+			deleteButton.className = "show";
+			owner.className = "show";
+			owner_text.className = "show";
 			highlightComms(communities);
 		}
 		function useUrlSwf()
@@ -1167,13 +1195,13 @@ else if (isLoggedIn == true)
 			
 			if (document.getElementById('file_check').checked)
 			{
-				file_url.style.display = "";
-				file.style.display = "none";
+				file_url.className = "show";
+				file.className = "hide";
 			}
 			else
 			{
-				file.style.display = "";
-				file_url.style.display = "none";
+				file.className = "show";
+				file_url.className = "hide";
 			}
 		}
 		function useUrlIcon()
@@ -1183,13 +1211,13 @@ else if (isLoggedIn == true)
 			
 			if (document.getElementById('icon_check').checked)
 			{
-				icon_url.style.display = "";
-				icon.style.display = "none";
+				icon_url.className = "show";
+				icon.className = "hide";
 			}
 			else
 			{
-				icon.style.display = "";
-				icon_url.style.display = "none";
+				icon.className = "show";
+				icon_url.className = "hide";
 			}
 		}
 		function validate_fields()
@@ -1274,8 +1302,12 @@ else if (isLoggedIn == true)
 	    	<div id="uploader_div" name="uploader_div" style="border-style:solid; border-color:#999999; border-radius: 10px; width:450px; margin:auto">
 	        	<h2>Widget Uploader</h2>
 	        	<form id="delete_form" name="delete_form" method="post" enctype="multipart/form-data" onsubmit="javascript:return confirmDelete()" >
-	        		<select id="upload_info" onchange="populate()" name="upload_info"><option value="new">Upload New Widget</option> <% out.print(populatePreviousUploads(request, response)); %></select>
-	        		<input type="submit" name="deleteButton" id="deleteButton" style="visibility:hidden;" value="Delete" />
+	        		<select id="upload_info" onchange="populate()" name="upload_info">
+	        			<option value="new">Upload New Widget</option> 
+	        			<option value="copy">Copy Current Widget</option> 
+	        			<% out.print(populatePreviousUploads(request, response)); %>
+	        		</select>
+	        		<input type="submit" name="deleteButton" id="deleteButton" class="hidden" value="Delete" />
 	        		<input type="hidden" name="deleteId" id="deleteId" />
 	        		<input type="hidden" name="deleteFile" id="deleteFile" />
 	        		<input type="hidden" name="deleteIcon" id="deleteIcon" />
@@ -1305,7 +1337,7 @@ else if (isLoggedIn == true)
 	                  </tr>
 	                  <tr>
 	                    <td>Swf File:</td>
-	                    <td><input type="file" name="file" id="file" /><input type="text" name="file_url" id="file_url" size="32" style="display:none;" /><input type="checkbox" id="file_check" name="file_check" onchange="useUrlSwf()" /> <span id="file_provide" name="file_provide"> Provide Url </span></td>
+	                    <td><input type="file" name="file" id="file" /><input type="text" name="file_url" id="file_url" size="32" class="hide" /><input type="checkbox" id="file_check" name="file_check" onchange="useUrlSwf()" /> <span id="file_provide" name="file_provide"> Provide Url </span></td>
 	                  </tr>
 	                  <tr>
 	                    <td>Version Number:</td>
@@ -1313,7 +1345,7 @@ else if (isLoggedIn == true)
 	                  </tr>
 	                  <tr id="iconRow">
 	                    <td>Icon Image:</td>
-	                    <td><input type="file" name="icon" id="icon" /><input type="text" name="icon_url" id="icon_url" size="32" style="display:none;" /><input type="checkbox" id="icon_check" name="icon_check" onchange="useUrlIcon()" /><span id="file_provide" name="file_provide"> Provide Url</span></td>
+	                    <td><input type="file" name="icon" id="icon" /><input type="text" name="icon_url" id="icon_url" size="32" class="hide" /><input type="checkbox" id="icon_check" name="icon_check" onchange="useUrlIcon()" /><span id="file_provide" name="file_provide"> Provide Url</span></td>
 	                  </tr>
 	                  <tr>
 	                    <td colspan="2" style="text-align:right"><input type="submit" value="Submit" /></td>

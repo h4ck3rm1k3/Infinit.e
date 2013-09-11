@@ -26,6 +26,7 @@ import org.restlet.Context;
 import org.restlet.Restlet;  
 import org.restlet.resource.ServerResource;
 import org.restlet.routing.Router;
+import org.restlet.routing.Template;
 
 import com.ikanow.infinit.e.api.authentication.LoginInterface;
 import com.ikanow.infinit.e.api.config.source.SourceInterface;
@@ -119,7 +120,9 @@ public class EmbeddedRestletApp extends Application
         attach(router, "/auth/login/{user}/{pass}", LoginInterface.class); 
         attach(router, "/auth/login/admin/{user}/{pass}",LoginInterface.class);
         attach(router, "/auth/keepalive",LoginInterface.class);
+        attach(router, "/auth/keepalive/admin",LoginInterface.class);
         attach(router, "/auth/logout",LoginInterface.class);
+        attach(router, "/auth/logout/admin",LoginInterface.class);
         attach(router, "/auth/forgotpassword",LoginInterface.class);
         attach(router, "/auth/deactivate",LoginInterface.class);
         
@@ -202,6 +205,7 @@ public class EmbeddedRestletApp extends Application
         attach(router, "/knowledge/feature/aliasSuggest/{field}/{term}/{communityids}",SearchInterface.class);        
         attach(router, "/knowledge/document/get/{docid}", DocumentInterface.class);  
         attach(router, "/knowledge/document/get/{sourcekey}/{url}", DocumentInterface.class);  
+    	router.attach("/knowledge/document/file/get/{sourcekey}/", DocumentInterface.class, Template.MODE_STARTS_WITH);
         attach(router, "/knowledge/document/query/{communityids}",QueryInterface.class);    
         attach(router, "/knowledge/feature/eventSuggest/{ent1}/{verb}/{ent2}/{field}/{communityids}",SearchInterface.class);
         	// (This is obsolete but leave in for another couple of releases)
@@ -290,9 +294,11 @@ public class EmbeddedRestletApp extends Application
         //BETA NAMING
         router.attach("/person/get/", PersonInterface.class);
         router.attach("/person/get/{personid}", PersonInterface.class);
+        router.attach("/person/list", PersonInterface.class);
         //V0 NAMING
         attach(router, "/social/person/get", PersonInterface.class);
         attach(router, "/social/person/get/{personid}", PersonInterface.class);
+        attach(router, "/social/person/list", PersonInterface.class);
 
         //WORDPRESS CALLS, wordpress still calls the old /people/ but i now route thru personResource
         //BETA NAMING
@@ -328,16 +334,17 @@ public class EmbeddedRestletApp extends Application
         attach(router, "/social/share/save/json/{id}/{type}/{title}/{description}", ShareInterface.class);
         attach(router, "/social/share/add/json/{type}/{title}/{description}", ShareInterface.class);
         attach(router, "/social/share/update/json/{id}/{type}/{title}/{description}", ShareInterface.class);
-        attach(router, "/social/share/add/ref/{type}/{documentid}/{title}/{description}", ShareInterface.class);
-        attach(router, "/social/share/update/ref/{id}/{type}/{documentid}/{title}/{description}", ShareInterface.class);
+        attach(router, "/social/share/add/ref/{type}/{documentloc}/{documentid}/{title}/{description}", ShareInterface.class);
+        attach(router, "/social/share/update/ref/{id}/{type}/{documentloc}/{documentid}/{title}/{description}", ShareInterface.class);
         
         // Communities
         //BETA NAMING
         router.attach("/share/add/community/{shareid}/{comment}/{communityid}/", ShareInterface.class);
-        router.attach("/share/remove/community/{shareid}/{communityid}/", ShareInterface.class);
+        attach(router, "/social/share/endorse/{shareid}/{communityid}/{isendorsed}", ShareInterface.class);
         //V0 NAMING
         attach(router, "/social/share/add/community/{shareid}/{comment}/{communityid}", ShareInterface.class);
         attach(router, "/social/share/remove/community/{shareid}/{communityid}", ShareInterface.class);
+        attach(router, "/share/remove/community/{shareid}/{communityid}", ShareInterface.class);
         
         // Delete Share from DB
         //BETA NAMING

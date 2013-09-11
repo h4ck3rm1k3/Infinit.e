@@ -16,18 +16,27 @@
 package com.ikanow.infinit.e.data_model.store.config.source;
 
 import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Type;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.apache.commons.codec.binary.Base64;
 import org.bson.types.ObjectId;
 
-import sun.misc.BASE64Encoder;
-
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonDeserializationContext;
+import com.google.gson.JsonDeserializer;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonSerializationContext;
+import com.google.gson.JsonSerializer;
 import com.google.gson.reflect.TypeToken;
 import com.ikanow.infinit.e.data_model.store.BaseDbPojo;
 import com.ikanow.infinit.e.data_model.store.social.authentication.AuthenticationPojo;
@@ -85,6 +94,9 @@ public class SourcePojo extends BaseDbPojo {
 	final public static String harvest_ = "harvest";
 	private SourceDatabaseConfigPojo database = null;
 	final public static String database_ = "database";
+	private SourceNoSqlConfigPojo nosql = null; 
+	final public static String nosql_ = "nosql";
+	
 	private SourceFileConfigPojo file = null;
 	final public static String file_ = "file";
 	private SourceRssConfigPojo rss = null;
@@ -114,10 +126,18 @@ public class SourcePojo extends BaseDbPojo {
 	final public static String searchCycle_secs_ = "searchCycle_secs";
 	private Integer maxDocs = null; // Limits the number of docs that can be stored for this source at any one time
 	final public static String maxDocs_ = "maxDocs";
+	private Integer throttleDocs = null; // Limits the number of docs that can be harvested in one cycle (cannot be higher than system setting in harvest.maxdocs_persource)
+	final public static String throttleDocs_ = "throttleDocs";
 	private Boolean duplicateExistingUrls; // If false (defaults: true) will ignore docs harvested by other sources in the community
 	final public static String duplicateExistingUrls_ = "duplicateExistingUrls";
 
+	// LEGACY CODE, IGNORED IN PROCESSING-PIPELINE MODE
+	private Boolean appendTagsToDocs = null; // if true (default) source tags are appended to the document
+	final public static String appendTagsToDocs_ = "appendTagsToDocs";
+	
 	public static class SourceSearchIndexFilter {
+		//TODO (INF-1922): add this to the GUI
+		public Boolean indexOnIngest = null; // (if specified and false, default:true, then don't index the docs at all)
 		public String entityFilter = null; // (regex applied to entity indexes, starts with "+" or "-" to indicate inclusion/exclusion, defaults to include-only)
 		public String assocFilter = null; // (regex applied to new-line separated association indexes, starts with "+" or "-" to indicate inclusion/exclusion, defaults to include-only)
 		public String entityGeoFilter = null; // (regex applied to entity indexes if the entity has geo, starts with "+" or "-" to indicate inclusion/exclusion, defaults to include-only)
@@ -133,6 +153,19 @@ public class SourcePojo extends BaseDbPojo {
 	}
 	private SourceSearchIndexFilter searchIndexFilter = null; // Optional, allows the source builder to configure which fields are searchable
 	final public static String searchIndexFilter_ = "searchIndexFilter";
+	
+	private LinkedHashMap<String, String> extractorOptions = null; // Optional, overrides the per-extractor configuration options, where permissible
+	final public static String extractorOptions_ = "extractorOptions";
+	
+	// TODO (INF-1922) source pipeline
+	private List<SourcePipelinePojo> processingPipeline;
+	final public static String processingPipeline_ = "processingPipeline";
+	
+	//TODO (INF-2120) enhanced distribution
+	private Integer distributionFactor;
+	final public static String distributionFactor_ = "distributionFactor";
+	// (temporary internal state):
+	private transient Set<Integer> distributionTokens;
 	
 	// Gets and sets
 	
@@ -421,7 +454,7 @@ public class SourcePojo extends BaseDbPojo {
 		}
 		//TESTED (urls with and without ?)
 		
-		s = s.replaceAll("http://|https://|smb://|ftp://|ftps://|file://|[/:+?&(),]", ".");
+		s = s.replaceAll("http://|https://|smb://|ftp://|ftps://|file://|[/:+?&(),#]", ".");
 		if (s.startsWith(".")) s = s.substring(1);
 		return s;
 	}
@@ -464,7 +497,7 @@ public class SourcePojo extends BaseDbPojo {
 		// Create MessageDigest and set shah256Hash value
 		MessageDigest md = MessageDigest.getInstance("SHA-256");
 		md.update(sb.toString().getBytes("UTF-8"));		
-		shah256Hash = (new BASE64Encoder()).encode(md.digest());	
+		shah256Hash = Base64.encodeBase64String(md.digest());	
 	}
 	public Integer getSearchCycle_secs() {
 		return searchCycle_secs;
@@ -543,6 +576,98 @@ public class SourcePojo extends BaseDbPojo {
 			}
 		} // (end if search filter specified)
 	}//(end initialize search filter)
-
+	public void setExtractorOptions(LinkedHashMap<String, String> extractorOptions) {
+		this.extractorOptions = extractorOptions;
+	}
+	public LinkedHashMap<String, String> getExtractorOptions() {
+		return extractorOptions;
+	}
 	//TESTED
+
+	///////////////////////////////////////////////////////////////////
+	
+	// Serialization/deserialization utils:
+	// (Ugh needed because extractorOptions keys can contain "."s)
+	
+	public GsonBuilder extendBuilder(GsonBuilder gp) {
+		return gp.registerTypeAdapter(SourcePojo.class, new SourcePojoDeserializer()).
+				registerTypeAdapter(SourcePojo.class, new SourcePojoSerializer());
+	}
+	
+	public void setProcessingPipeline(List<SourcePipelinePojo> processingPipeline) {
+		this.processingPipeline = processingPipeline;
+	}
+	public List<SourcePipelinePojo> getProcessingPipeline() {
+		return processingPipeline;
+	}
+
+	public void setAppendTagsToDocs(Boolean appendTagsToDocs) {
+		this.appendTagsToDocs = appendTagsToDocs;
+	}
+	public Boolean getAppendTagsToDocs() {
+		return appendTagsToDocs;
+	}
+
+	public void setNoSql(SourceNoSqlConfigPojo noSql) {
+		this.nosql = noSql;
+	}
+	public SourceNoSqlConfigPojo getNoSql() {
+		return nosql;
+	}
+
+	public void setDistributionFactor(Integer distributionFactor) {
+		this.distributionFactor = distributionFactor;
+	}
+	public Integer getDistributionFactor() {
+		return distributionFactor;
+	}
+
+	public void setDistributionTokens(Set<Integer> distributionTokens) {
+		this.distributionTokens = distributionTokens;
+	}
+	public Set<Integer> getDistributionTokens() {
+		return distributionTokens;
+	}
+
+	public void setThrottleDocs(Integer throttleDocs) {
+		this.throttleDocs = throttleDocs;
+	}
+	public Integer getThrottleDocs() {
+		return throttleDocs;
+	}
+
+	protected static class SourcePojoDeserializer implements JsonDeserializer<SourcePojo> 
+	{
+		@Override
+		public SourcePojo deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) throws JsonParseException
+		{
+			SourcePojo src = BaseDbPojo.getDefaultBuilder().create().fromJson(json, SourcePojo.class);  
+			if (null != src.extractorOptions) {
+				LinkedHashMap<String, String> transformed = new LinkedHashMap<String, String>();
+				for (Map.Entry<String, String> entry: src.extractorOptions.entrySet()) {
+					transformed.put(entry.getKey().replace("%2e", "."), entry.getValue());
+				}
+				src.extractorOptions = transformed;
+			}
+			return src;
+		}//TESTED (with and without extractor options)
+	}
+	protected static class SourcePojoSerializer implements JsonSerializer<SourcePojo> 
+	{
+		@Override
+		public JsonElement serialize(SourcePojo src, Type typeOfT, JsonSerializationContext context) throws JsonParseException
+		{
+			if (null != src.extractorOptions) {
+				LinkedHashMap<String, String> transformed = new LinkedHashMap<String, String>();
+				for (Map.Entry<String, String> entry: src.extractorOptions.entrySet()) {
+					transformed.put(entry.getKey().replace(".", "%2e"), entry.getValue());
+				}
+				src.extractorOptions = transformed;
+			}
+			// GSON transformation:
+			JsonElement je = SourcePojo.getDefaultBuilder().create().toJsonTree(src, typeOfT);
+			
+			return je;
+		}//TESTED (with and without extractor options)
+	}	
 }

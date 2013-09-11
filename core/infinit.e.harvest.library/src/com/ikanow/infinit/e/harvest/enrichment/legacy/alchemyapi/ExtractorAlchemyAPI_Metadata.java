@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.log4j.Logger;
 
@@ -26,13 +28,13 @@ import com.google.gson.Gson;
 import com.ikanow.infinit.e.data_model.InfiniteEnums;
 import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorDailyLimitExceededException;
 import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorDocumentLevelException;
+import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorSourceLevelException;
 import com.ikanow.infinit.e.data_model.interfaces.harvest.EntityExtractorEnum;
 import com.ikanow.infinit.e.data_model.interfaces.harvest.IEntityExtractor;
 import com.ikanow.infinit.e.data_model.interfaces.harvest.ITextExtractor;
+import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
 import com.ikanow.infinit.e.data_model.store.document.EntityPojo;
-import com.ikanow.infinit.e.data_model.store.document.GeoPojo;
-import com.ikanow.infinit.e.harvest.utils.DimensionUtility;
 import com.ikanow.infinit.e.harvest.utils.PropertiesManager;
 
 public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtractor 
@@ -45,6 +47,21 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 	private Map<EntityExtractorEnum, String> _capabilities = new HashMap<EntityExtractorEnum, String>();		
 	private boolean _bConceptExtraction = false;
 	
+	// Batch size
+	private int _nBatchSize = 1;
+	private int _nNumKeywords = 50; // (for batch size > 1, keywords/batch_size)
+	private static class BatchInfo {
+		DocumentPojo doc;
+		String fullText;
+	}
+	BatchInfo[] _batchedDocuments = null;
+	StringBuffer _batchText = null;
+	int _nCurrBatchedDocs = 0;
+	
+	//_______________________________________________________________________
+	//_____________________________INITIALIZATION________________
+	//_______________________________________________________________________
+
 	/**
 	 * Constructor, adds capabilities of Alchemy to hashmap
 	 */
@@ -55,20 +72,112 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		_capabilities.put(EntityExtractorEnum.Quality, "1");
 		_capabilities.put(EntityExtractorEnum.URLTextExtraction, "true");
 		_capabilities.put(EntityExtractorEnum.GeotagExtraction, "true");
-		_capabilities.put(EntityExtractorEnum.SentimentExtraction, "false");
+		_capabilities.put(EntityExtractorEnum.SentimentExtraction, "false");		
+	}
+	
+	// Configuration: override global configuration on a per source basis
+	
+	private boolean _bConfigured = false;
+	
+	private void configure(SourcePojo source)
+	{
+		if (_bConfigured) {
+			return;
+		}
+		_bConfigured = true;
+		
+		// SOURCE OVERRIDE
+		
+		Boolean bSentimentEnabled = null;
+		Boolean bConceptsEnabled = null;
+		Boolean bStrict = null;
+		Integer batchSize = null;
+		Integer numKeywords = null;
+				
+		if ((null != source) && (null != source.getExtractorOptions())) {
+			try {
+				String s = source.getExtractorOptions().get("app.alchemyapi-metadata.sentiment");
+				if (null != s) bSentimentEnabled = Boolean.parseBoolean(s);				
+			}
+			catch (Exception e){}
+			try {
+				String s = source.getExtractorOptions().get("app.alchemyapi-metadata.concepts");
+				if (null != s) bConceptsEnabled = Boolean.parseBoolean(s);						
+			}
+			catch (Exception e){}
+			try {
+				String s = source.getExtractorOptions().get("app.alchemyapi-metadata.strict");
+				if (null != s) bStrict = Boolean.parseBoolean(s);						
+			}
+			catch (Exception e){}
+			try {
+				numKeywords = Integer.parseInt(source.getExtractorOptions().get("app.alchemyapi-metadata.numKeywords"));						
+			}
+			catch (Exception e){}
+			try {
+				batchSize = Integer.parseInt(source.getExtractorOptions().get("app.alchemyapi-metadata.batchSize"));						
+			}
+			catch (Exception e){}
+		}
+		
+		// DEFAULT CONFIGURATION
+		
+		PropertiesManager properties = new PropertiesManager();
+		
+		// 2] SENTIMENT
 		
 		try {
-			PropertiesManager properties = new PropertiesManager();
-			Boolean bSentimentEnabled = properties.getExtractionCapabilityEnabled(getName(), "sentiment");
-			if (null != bSentimentEnabled) { // (ie defaults to true)
-				_alch.setSentimentEnabled(bSentimentEnabled);
-			}			
-			Boolean bConceptsEnabled = properties.getExtractionCapabilityEnabled(getName(), "concepts");
-			if (null != bConceptsEnabled) { // (ie defaults to true)
-				_bConceptExtraction = bConceptsEnabled;
-			}			
-		}		
-		catch (Exception e) {} // carry on
+			if (null == bSentimentEnabled) { // (ie not per source)
+				bSentimentEnabled = properties.getExtractionCapabilityEnabled(getName(), "sentiment");			
+			}
+		}
+		catch (Exception e) {}
+		
+		// 3] CONCEPTS
+		
+		try {
+			if (null == bConceptsEnabled) { // (ie not per source)
+				bConceptsEnabled = properties.getExtractionCapabilityEnabled(getName(), "concepts");			
+			}
+		}
+		catch (Exception e) {}
+
+		// 4] KEYWORD QUALITY
+		
+		try {
+			if (null == bStrict) { // (ie not per source)
+				bStrict = properties.getExtractionCapabilityEnabled(getName(), "strict");			
+			}
+		}
+		catch (Exception e) {}
+		
+		
+		// ACTUALLY DO CONFIG
+		
+		if (null != batchSize) {
+			_nBatchSize = batchSize;
+			if (_nBatchSize > 1) {
+				_batchedDocuments = new BatchInfo[_nBatchSize];
+				_batchText = new StringBuffer();
+			}
+		}
+		
+		if (null != numKeywords) {
+			_alch.setNumKeywords(numKeywords);
+			_nNumKeywords = numKeywords; // (only used for batch size > 1)
+		}
+		
+		if (null != bStrict) {
+			_alch.setStrict(bStrict);
+		}
+		
+		if (null != bSentimentEnabled) { // (ie defaults to true)
+			_alch.setSentimentEnabled(bSentimentEnabled);
+		}
+		
+		if (null != bConceptsEnabled) { // (ie defaults to true)
+			_bConceptExtraction = bConceptsEnabled;
+		}			
 	}
 	
 	//_______________________________________________________________________
@@ -87,7 +196,75 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 	@Override
 	public void extractEntities(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException
 	{		
+		if (null != partialDoc) {
+			configure(partialDoc.getTempSource());
+			
+			if (null == partialDoc.getFullText()) {
+				return;
+			}
+		}
+		if (_nBatchSize > 1) {
+			
+			if (null != partialDoc) {
+				BatchInfo batchInfo = _batchedDocuments[_nCurrBatchedDocs];
+				if (null == batchInfo) {
+					_batchedDocuments[_nCurrBatchedDocs] = (batchInfo = new BatchInfo());
+				}
+				batchInfo.doc = partialDoc;
+				batchInfo.fullText = partialDoc.getFullText();
+				_batchText.append(batchInfo.fullText);
+				if (!batchInfo.fullText.endsWith(".")) {
+					_batchText.append('.');
+				}
+				_batchText.append('\n');
+				_nCurrBatchedDocs++;
+			}//TESTED
+			
+			if ((_nCurrBatchedDocs == _nBatchSize) || 
+					((null == partialDoc) && (_nCurrBatchedDocs > 0)))
+			{
+				if (_nCurrBatchedDocs < _nBatchSize) {
+					_batchedDocuments[_nCurrBatchedDocs] = null; // (null-terminated array)
+				}
+				
+				DocumentPojo megaDoc = new DocumentPojo();
+				megaDoc.setUrl(_batchedDocuments[0].doc.getUrl() + "|" + _batchedDocuments[_nCurrBatchedDocs-1].doc.getUrl());
+				megaDoc.setFullText(_batchText.toString());
+				
+				_alch.setNumKeywords(_nNumKeywords*_nCurrBatchedDocs);
+				int nSavedBatchSize = _nBatchSize;
+				// Recurse, but only once since setting _nBatchSize to 1
+				_nBatchSize = 1;
+				try {
+					this.extractEntities(megaDoc);
+					
+					// Apply megaDoc results to individual docs
+					handleBatchProcessing(megaDoc, _batchedDocuments);
+				}
+				catch (Exception e) {					
+					String strError = "Exception Message (0): doc=" + megaDoc.getUrl() + " error=" +  e.getMessage();
+					logger.error(strError, e);
+					throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
+				}
+				finally {
+					_alch.setNumKeywords(_nNumKeywords); // (<- probably not necessary)
+					
+					// Tidy up:
+					_nBatchSize = nSavedBatchSize;
+					_nCurrBatchedDocs = 0;
+					_batchText.setLength(0);
+				}			
+				
+			}//TESTED
+			
+			return; // (don't do anything until batch size complete)
+		}
+		if (null == partialDoc) {
+			return;
+		}
+		
 		// Run through specified extractor need to pull these properties from config file
+		// (already checked if this is non-null)
 		if (partialDoc.getFullText().length() < 16) { // (don't waste Extractor call/error logging)
 			return;
 		}
@@ -109,8 +286,9 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (1): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}
 		
 		try
@@ -134,8 +312,9 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (2): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 		// Then get concepts:
 		if (_bConceptExtraction) {
@@ -155,6 +334,11 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 	@Override
 	public void extractEntitiesAndText(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException
 	{
+		if (null == partialDoc) {
+			return;
+		}
+		configure(partialDoc.getTempSource());
+		
 		// Run through specified extractor need to pull these properties from config file
 		String json_doc = null;
 			// (gets text also)
@@ -174,7 +358,8 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
+			String strError = "Exception Message (3): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
 			throw new InfiniteEnums.ExtractorDocumentLevelException();
 		}	
 		try
@@ -207,8 +392,9 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (4): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 		// Then get concepts:
 		if (_bConceptExtraction) {
@@ -247,20 +433,26 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 	 * @throws ExtractorDailyLimitExceededException 
 	 */
 	@Override
-	public void extractText(DocumentPojo doc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException
+	public void extractText(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException
 	{
+		if (null == partialDoc) {
+			return;
+		}
+		configure(partialDoc.getTempSource());
+		
 		// In this case, extractText and extractTextAndEntities are doing the same thing
 		// eg allows for keywords + entities (either from OC or from AA or from any other extractor)
-		extractEntitiesAndText(doc);
+		extractEntitiesAndText(partialDoc);
 	}
 	
 	//_______________________________________________________________________
-	//______________________________UTILIY FUNCTIONS_______________________
+
+	//______________________________UTILITY FUNCTIONS_______________________
 	//_______________________________________________________________________
 	
 	// Utility function for concept extraction
 	
-	public void doConcepts(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException {
+	private void doConcepts(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException {
 		if ((null != partialDoc.getMetadata()) && partialDoc.getMetadata().containsKey("AlchemyAPI_concepts")) {
 			return;
 		}
@@ -281,8 +473,9 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		}
 		catch (Exception e) {
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();			
+			String strError = "Exception Message (5): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);			
 		}
 		try {
 			// Turn concepts into metadata:
@@ -295,8 +488,9 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (6): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 	}
 
@@ -332,8 +526,9 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 	 * @return
 	 * @throws ExtractorDailyLimitExceededException 
 	 * @throws ExtractorDocumentLevelException 
+	 * @throws ExtractorSourceLevelException 
 	 */
-	private void checkAlchemyErrors(String json_doc, String feed_url) throws ExtractorDailyLimitExceededException, ExtractorDocumentLevelException 
+	private void checkAlchemyErrors(String json_doc, String feed_url) throws ExtractorDailyLimitExceededException, ExtractorDocumentLevelException, ExtractorSourceLevelException 
 	{		
 		if ( json_doc.contains("daily-transaction-limit-exceeded") )
 		{
@@ -342,97 +537,26 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		}
 		else if ( json_doc.contains("cannot-retrieve:http-redirect") )
 		{
-			logger.error("AlchemyAPI redirect error on url=" + feed_url);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "AlchemyAPI redirect error on url=" + feed_url;
+			logger.error(strError);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}
 		else if ( json_doc.contains("cannot-retrieve:http-error:4") )
 		{
-			logger.error("AlchemyAPI cannot retrieve error on url=" + feed_url);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();			
+			String strError = "AlchemyAPI cannot retrieve error on url=" + feed_url;
+			logger.error(strError);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);			
+		}
+		else if ( json_doc.contains("invalid-api-key") )
+		{
+			logger.error("AlchemyAPI invalid API key");
+			throw new InfiniteEnums.ExtractorSourceLevelException("AlchemyAPI invalid API key");						
 		}
 	}
 	
 	// Utility function to convert an Alchemy entity to an Infinite entity
 	
-	public static EntityPojo convertAlchemyEntToEntPojo(AlchemyEntityPojo pojoToConvert)
-	{
-		try
-		{
-			EntityPojo ent = new EntityPojo();
-			ent.setActual_name(pojoToConvert.text);
-			ent.setType(pojoToConvert.type);
-			ent.setRelevance(Double.parseDouble(pojoToConvert.relevance));
-			ent.setFrequency(Long.parseLong(pojoToConvert.count));
-			if (null != pojoToConvert.sentiment) {
-				if (null != pojoToConvert.sentiment.score) {
-					ent.setSentiment(Double.parseDouble(pojoToConvert.sentiment.score));
-				}
-				else { // neutral
-					ent.setSentiment(0.0);
-				}
-			}
-			// (else no sentiment present)
-			
-			if ( pojoToConvert.disambiguated != null )
-			{
-				ent.setSemanticLinks(new ArrayList<String>());
-				ent.setDisambiguatedName(pojoToConvert.disambiguated.name);
-				if ( pojoToConvert.disambiguated.geo != null )
-				{
-					GeoPojo geo = new GeoPojo();
-					String[] geocords = pojoToConvert.disambiguated.geo.split(" ");
-					geo.lat = Double.parseDouble(geocords[0]);
-					geo.lon = Double.parseDouble(geocords[1]);
-					ent.setGeotag(geo);
-				}
-				//Add link data if applicable
-				if ( pojoToConvert.disambiguated.census != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.census);
-				if ( pojoToConvert.disambiguated.ciaFactbook != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.ciaFactbook);
-				if ( pojoToConvert.disambiguated.dbpedia != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.dbpedia);
-				if ( pojoToConvert.disambiguated.freebase != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.freebase);
-				if ( pojoToConvert.disambiguated.opencyc != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.opencyc);
-				if ( pojoToConvert.disambiguated.umbel != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.umbel);
-				if ( pojoToConvert.disambiguated.yago != null)
-					ent.getSemanticLinks().add(pojoToConvert.disambiguated.yago);
-				
-				if ( ent.getSemanticLinks().size() == 0)
-					ent.setSemanticLinks(null); //If no links got added, remove the list
-			}
-			else
-			{
-				//sets the disambig name to actual name if
-				//there was no disambig name for this ent
-				//that way all entities have a disambig name
-				ent.setDisambiguatedName(ent.getActual_name());
-			}
-			//Calculate Dimension based on ent type
-			try {
-				ent.setDimension(DimensionUtility.getDimensionByType(ent.getType()));
-			}
-			catch (java.lang.IllegalArgumentException e) {
-				ent.setDimension(EntityPojo.Dimension.What);									
-			}
-			return ent;
-		}
-		catch (Exception ex)
-		{
-			logger.error("Line: [" + ex.getStackTrace()[2].getLineNumber() + "] " + ex.getMessage());
-			ex.printStackTrace();
-			//******************BUGGER***********
-			//LOG ERROR TO A LOG
-		}
-		return null;
-	}
-
-	// Utility function to convert an Alchemy entity to an Infinite entity
-	
-	public static EntityPojo convertAlchemyKeywordToEntPojo(AlchemyKeywordPojo pojoToConvert)
+	private static EntityPojo convertAlchemyKeywordToEntPojo(AlchemyKeywordPojo pojoToConvert)
 	{
 		try
 		{
@@ -440,8 +564,7 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 			ent.setActual_name(pojoToConvert.text);
 			ent.setType("Keyword");
 			ent.setRelevance(Double.parseDouble(pojoToConvert.relevance));
-			double dPseudoFreq = (Math.exp(ent.getRelevance()) - 1.0)*(20.0/(Math.E - 1.0)); // (ie between 0 and 20, assume relevance is log scale)
-			ent.setFrequency(1L + (long)(dPseudoFreq)); //(ie it's a pseudo-frequency)
+			ent.setFrequency(1L); 
 			if (null != pojoToConvert.sentiment) {
 				if (null != pojoToConvert.sentiment.score) {
 					ent.setSentiment(Double.parseDouble(pojoToConvert.sentiment.score));
@@ -467,4 +590,76 @@ public class ExtractorAlchemyAPI_Metadata implements IEntityExtractor, ITextExtr
 		}
 		return null;
 	}
+
+	//_______________________________________________________________________
+
+	//______________________________BATCH PROCESSING_________________________
+	//_______________________________________________________________________
+
+	private static final int nMaxKeywordsPerSearch = 50; 
+	
+	private void handleBatchProcessing(DocumentPojo megaDoc, BatchInfo[] batchInfo)
+	{
+		int nCurrKeywords = 0;
+		HashMap<String, EntityPojo> currKeywordMap = new HashMap<String, EntityPojo>();
+		StringBuffer keywordRegexBuff = new StringBuffer();
+		
+		for (EntityPojo ent: megaDoc.getEntities()) {
+			
+			String disName = ent.getDisambiguatedName().toLowerCase();
+			if (!currKeywordMap.containsKey(disName)) {
+				keywordRegexBuff.append(Pattern.quote(ent.getDisambiguatedName())).append('|');
+				currKeywordMap.put(disName, ent);
+				nCurrKeywords++;
+				
+				if (nMaxKeywordsPerSearch == nCurrKeywords) {
+					keywordRegexBuff.setLength(keywordRegexBuff.length() - 1);
+					
+					handleBatchProcessing_keywordSet(batchInfo, keywordRegexBuff.toString(), currKeywordMap);
+					
+					currKeywordMap.clear();
+					keywordRegexBuff.setLength(0);
+					nCurrKeywords = 0;
+				}
+			}// (else entity already seen - won't normally happen I think)
+		}//end loop over entities
+		if (nCurrKeywords > 0) {
+			
+			keywordRegexBuff.setLength(keywordRegexBuff.length() - 1);			
+			handleBatchProcessing_keywordSet(batchInfo, keywordRegexBuff.toString(), currKeywordMap);
+		}
+	}//TESTED
+	
+	private void handleBatchProcessing_keywordSet(BatchInfo[] batchInfo, String currKeywordRegexStr, HashMap<String, EntityPojo> currKeywordMap)
+	{
+		Pattern currKeywordRegex = Pattern.compile(currKeywordRegexStr, Pattern.CASE_INSENSITIVE);
+		
+		long nDoc = 0;
+		for (BatchInfo batchedDoc: batchInfo) {
+			nDoc--;
+			
+			if (null == batchedDoc) { // null-terminated array
+				break;
+			}			
+			Matcher m = currKeywordRegex.matcher(batchedDoc.fullText);
+
+			while (m.find()) {
+				
+				String name = m.group().toLowerCase();
+				EntityPojo ent = currKeywordMap.get(name);
+				
+				if ((null != ent) && (nDoc != ent.getDoccount())) { // (see below) 
+					if (null == batchedDoc.doc.getEntities()) {
+						batchedDoc.doc.setEntities(new ArrayList<EntityPojo>());
+					}
+					batchedDoc.doc.getEntities().add(ent);
+					ent.setDoccount(nDoc);
+						// use this as an efficient check to only add each entity once per doc
+						// doccount gets overwritten by the generic processing module so fine to abuse this
+				}
+				// (else probably an internal logic error ie shouldn't happen)
+				
+			} // end loop over matches
+		}//end loop over matched docs
+	}//TESTED
 }

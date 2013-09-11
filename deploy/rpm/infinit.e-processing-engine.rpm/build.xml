@@ -74,10 +74,13 @@
 			tofile="./SOURCES/infinit.e-processing-engine/mnt/opt/infinite-home/lib/infinit.e.core.server-${infinite_version}-${infinite_release}.jar"/>
 		<copy file="../infinit.e.mongo-indexer/dist/opt/infinite-home/lib/infinit.e.mongo-indexer.jar" 
 			tofile="./SOURCES/infinit.e-processing-engine/mnt/opt/infinite-home/lib/infinit.e.mongo-indexer-${infinite_version}-${infinite_release}.jar"/>
+		<copy file="../infinit.e.hadoop.prototyping_engine/build/jar/infinit.e.hadoop.prototyping_engine.jar" 
+			tofile="./SOURCES/infinit.e-processing-engine/mnt/opt/infinite-home/lib/plugins/infinit.e.hadoop.prototyping_engine-${infinite_version}-${infinite_release}.jar"/>
 
 		<!-- Haven't included these as normal for OSS reasons, but can bundle in RPM -->
+		<!--  (Note tika is a special case, we exclude it from bundling because it contains conflicts and we want it at the end of the classpath) -->
 		<copy todir="./SOURCES/infinit.e-processing-engine/mnt/opt/infinite-home/lib/">
-			<fileset dir="../infinit.e.harvest.library/lib/" includes="tika-app-*.jar jcifs-*.jar j-calais*.jar"/>
+			<fileset dir="../infinit.e.harvest.library/lib/" includes="tika-app-*.jar jcifs-*.jar j-calais*.jar GridFSZipFile.jar"/>
 		</copy>
 	</target>
 	

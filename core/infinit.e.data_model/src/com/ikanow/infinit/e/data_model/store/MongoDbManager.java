@@ -31,15 +31,18 @@ public class MongoDbManager {
 	public static final String exists_ = "$exists"; 
 	public static final String and_ = "$and"; 
 	public static final String not_ = "$not"; 
+	public static final String nor_ = "$nor"; 
 	public static final String or_ = "$or"; 
 	public static final String ne_ = "$ne"; 
 	public static final String gt_ = "$gt"; 
 	public static final String gte_ = "$gte"; 
 	public static final String lt_ = "$lt"; 
 	public static final String lte_ = "$lte"; 
+	public static final String all_ = "$all"; 
 	public static final String in_ = "$in"; 
 	public static final String each_ = "$each"; 
 	public static final String set_ = "$set"; 
+	public static final String unset_ = "$unset"; 
 	public static final String inc_ = "$inc"; 
 	public static final String addToSet_ = "$addToSet"; 
 	public static final String pull_ = "$pull"; 
@@ -48,6 +51,9 @@ public class MongoDbManager {
 	public static final String pushAll_ = "$pushAll"; 
 	public static final String pop_ = "$pop"; 
 	public static final String size_ = "$size";
+	public static final String where_ = "$where";
+	// Other keywords:
+	public static final String sparse_ = "sparse";
 	
 	protected MongoDbManager() {}
 	
@@ -291,6 +297,7 @@ public class MongoDbManager {
 		private DBCollection _feature_assoc;
 		private DBCollection _feature_geo;
 		private DBCollection _feature_sync_lock;
+		private DBCollection _feature_agg_lock;
 		
 		public CommandResult getLastError(String sLogicalCollectionName) {
 			// (In this case, logical collection name doesn't matter)
@@ -320,6 +327,12 @@ public class MongoDbManager {
 				_feature_sync_lock = _savedMongo.getDB("feature").getCollection("sync_lock");					
 			}
 			return _feature_sync_lock;			
+		}
+		public DBCollection getAggregationLock() { // (Used to lock aggregation activities to one harvester)
+			if (null == _feature_agg_lock) {
+				_feature_agg_lock = _savedMongo.getDB("feature").getCollection("agg_lock");					
+			}
+			return _feature_agg_lock;			
 		}
 	}
 	

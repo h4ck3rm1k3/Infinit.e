@@ -58,6 +58,8 @@ package com.ikanow.infinit.e.model.presentation.dashboard.header
 		
 		private static const MANAGER_ID:String = NavigationConstants.DASHBOARD_HEADER_MANAGER_ID;
 		
+		private static const SOURCE_MONITOR_ID:String = NavigationConstants.DASHBOARD_HEADER_SOURCE_MONITOR_ID;
+		
 		private static const LOGOUT_ID:String = NavigationConstants.DASHBOARD_HEADER_LOGOUT_ID;
 		
 		
@@ -177,6 +179,14 @@ package com.ikanow.infinit.e.model.presentation.dashboard.header
 		/**
 		 * Show Sources Dialog
 		 */
+		public function showSettingsDialog():void
+		{
+			navigateById( NavigationConstants.WORKSPACE_SETTINGS_ID );
+		}
+		
+		/**
+		 * Show Sources Dialog
+		 */
 		public function showSourcesDialog():void
 		{
 			navigateById( SOURCES_ID );
@@ -217,13 +227,21 @@ package com.ikanow.infinit.e.model.presentation.dashboard.header
 			
 			navActions.addItem( navigationItem );
 			
-			// logout
+			// manager
 			navigationItem = new NavigationItem();
 			navigationItem.navigatorId = navigatorId;
 			navigationItem.id = MANAGER_ID;
 			navigationItem.type = NavigationItemTypes.ACTION;
 			navigationItem.label = resourceManager.getString( 'infinite', 'header.launchManager' );
 			navActions.addItem( navigationItem );
+			
+			// source monitor
+			/*navigationItem = new NavigationItem();
+			navigationItem.navigatorId = navigatorId;
+			navigationItem.id = SOURCE_MONITOR_ID;
+			navigationItem.type = NavigationItemTypes.ACTION;
+			navigationItem.label = resourceManager.getString( 'infinite', 'header.sourceMonitor' );
+			navActions.addItem( navigationItem );*/
 			
 			// logout
 			navigationItem = new NavigationItem();
@@ -293,6 +311,11 @@ package com.ikanow.infinit.e.model.presentation.dashboard.header
 					break;
 				}
 				case MANAGER_ID:
+				{
+					// (do nothing, handled directly by the callback to avoid pop-up security issues)
+					break;
+				}
+				case SOURCE_MONITOR_ID:
 				{
 					// (do nothing, handled directly by the callback to avoid pop-up security issues)
 					break;

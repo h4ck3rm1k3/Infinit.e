@@ -174,13 +174,17 @@ public class FeedHarvester implements HarvesterInterface
 						if ((null != source.getRssConfig()) && (null != source.getRssConfig().getUserAgent())) {
 							feedFetcher.setUserAgent(source.getRssConfig().getUserAgent());
 						}
-						return feedFetcher.retrieveFeed(new URL(url));
+						SyndFeed retVal = feedFetcher.retrieveFeed(new URL(this.cleanUrlStart(url)));
+						if (null == retVal) {
+							handleRssError(new RuntimeException("Unknown RSS error") , source);							
+						}
+						return retVal;
 					} 
 					catch (Exception e) {
+						System.out.println(i + "  " + url);
+						
 						if (1 == i) { // else just try again
-							if (null == url) { // can only error on primary RSS, makes life simpler
-								handleRssError(e, source);
-							}
+							handleRssError(e, source);
 						}
 					}
 				}
@@ -193,14 +197,16 @@ public class FeedHarvester implements HarvesterInterface
 						if ((null != source.getRssConfig()) && (null != source.getRssConfig().getUserAgent())) {
 							feedFetcher.setUserAgent(source.getRssConfig().getUserAgent());
 						}
-						return feedFetcher.retrieveFeed(new URL(this.cleanUrlStart(url)));
+						SyndFeed retVal = feedFetcher.retrieveFeed(new URL(this.cleanUrlStart(url)));
+						if (null == retVal) {
+							handleRssError(new RuntimeException("Unknown RSS error") , source);							
+						}
+						return retVal;
 					} 
 					catch (Exception e) 
 					{
 						if (1 == i) { // else just try again
-							if (null == url) { // can only error on primary RSS, makes life simpler
-								handleRssError(e, source);
-							}
+							handleRssError(e, source);
 						}
 					}
 				}
@@ -231,8 +237,13 @@ public class FeedHarvester implements HarvesterInterface
 					bSuspendSource = true;
 				}
 			}
-		}
-		_context.getHarvestStatus().update(source, new Date(), HarvestEnum.error, sNewMessage, bSuspendSource, false);
+		}//TESTED
+		if (null != source.getUrl()) {
+			_context.getHarvestStatus().update(source, new Date(), HarvestEnum.error, sNewMessage, bSuspendSource, false);
+		}//TESTED
+		else {
+			_context.getHarvestStatus().logMessage(sNewMessage, true);
+		}//TESTED
 		
 		// If an exception occurs log the error
 		logger.error("Exception Message: " + e.getMessage(), e);		
@@ -251,7 +262,7 @@ public class FeedHarvester implements HarvesterInterface
 			SyndFeed feed = getFeed(source, null);
 			if (null != feed) {
 				feeds.add(feed);
-			}			
+			}
 		}
 		else if ((null != source.getRssConfig())&&(null != source.getRssConfig().getSearchConfig()))
 		{
@@ -322,6 +333,9 @@ public class FeedHarvester implements HarvesterInterface
 		long nWaitTime_ms = props.getWebCrawlWaitTime();
 		long nMaxTime_ms = props.getMaxTimePerFeed(); // (can't override this, too easy to break the system...)
 		int nMaxDocsPerSource = props.getMaxDocsPerSource();
+		if (_context.isStandalone()) {
+			nMaxDocsPerSource = _context.getStandaloneMaxDocs();
+		}		
 		long nNow = new Date().getTime();
 		if (null != source.getRssConfig()) {
 			if (null != source.getRssConfig().getWaitTimeOverride_ms()) {
@@ -334,6 +348,10 @@ public class FeedHarvester implements HarvesterInterface
 		}
 		if (nMaxDocs > nMaxDocsPerSource) { // (another limit, take the smaller of the 2)
 			nMaxDocs = nMaxDocsPerSource;
+		}
+		// Can override system settings if less:
+		if ((null != source.getThrottleDocs()) && (source.getThrottleDocs() < nMaxDocs)) {
+			nMaxDocs = source.getThrottleDocs();
 		}
 		// (end per feed configuration)
 		
@@ -404,8 +422,19 @@ public class FeedHarvester implements HarvesterInterface
 	
 				if ( null != entry.getLink() ) //if url returns null, skip this entry
 				{
-					String url = this.cleanUrlStart(entry.getLink());
+					String url = entry.getLink();
+					if ((nSyndEntries <= nRealSyndEntries) || (null == entry.getSource())) { // (else URL can be what it wants)
+						url = this.cleanUrlStart(entry.getLink());
+					}
 
+					// Intra-source distribution logic:
+					if ((null != source.getDistributionTokens()) && (null != source.getDistributionFactor())) {
+						int split = Math.abs(url.hashCode()) % source.getDistributionFactor();
+						if (!source.getDistributionTokens().contains(split)) {
+							continue;
+						}
+					}//TESTED (copy and paste from FileHarvester)
+					
 					if (null != source.getRssConfig()) { // Some RSS specific logic
 						// If an include is specified, must match
 						Matcher includeMatcher = source.getRssConfig().getIncludeMatcher(url);
@@ -520,7 +549,7 @@ public class FeedHarvester implements HarvesterInterface
 							if ((null != dupModDate) && (null != dupId)) {
 								if (dupModDate.getTime() + source.getRssConfig().getUpdateCycle_secs()*1000 < nNow) {
 									
-									DocumentPojo doc = buildDocument(entry, source, duplicateSources);
+									DocumentPojo doc = buildDocument(url, entry, source, duplicateSources);
 									if ((nSyndEntries > nRealSyndEntries) && (null != entry.getSource())) {
 										// (Use dummy TitleEx to create a "fake" full text block)
 										doc.setFullText(entry.getSource().getDescription());
@@ -537,7 +566,7 @@ public class FeedHarvester implements HarvesterInterface
 						}//TESTED (duplicates we update instead of ignoring)
 						
 						if (!duplicate) {
-							DocumentPojo doc = buildDocument(entry, source, duplicateSources);
+							DocumentPojo doc = buildDocument(url, entry, source, duplicateSources);
 							if ((nSyndEntries > nRealSyndEntries) && (null != entry.getSource())) {
 								// (Use dummy TitleEx to create a "fake" full text block)
 								doc.setFullText(entry.getSource().getDescription());
@@ -568,15 +597,12 @@ public class FeedHarvester implements HarvesterInterface
 		} 
 	}
 
-	private DocumentPojo buildDocument(SyndEntry entry, SourcePojo source, LinkedList<String> duplicateSources) {
-
-		String tmpURL = this.cleanUrlStart(entry.getLink().toString()); 
-		// (can't return null because called from code which checks this)
+	private DocumentPojo buildDocument(String cleansedUrl, SyndEntry entry, SourcePojo source, LinkedList<String> duplicateSources) {
 
 		// create the feed pojo
 		DocumentPojo doc = new DocumentPojo();
 
-		doc.setUrl(tmpURL);
+		doc.setUrl(cleansedUrl);
 		doc.setCreated(new Date());
 		doc.setModified(new Date());
 

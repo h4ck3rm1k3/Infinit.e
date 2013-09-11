@@ -43,8 +43,8 @@ package com.ikanow.infinit.e.shared.model.manager
 	import com.ikanow.infinit.e.widget.library.data.SelectedInstance;
 	import com.ikanow.infinit.e.widget.library.data.SelectedItem;
 	import com.ikanow.infinit.e.widget.library.data.WidgetContext;
-	import com.ikanow.infinit.e.widget.library.framework.WidgetSaveObject;
 	import com.ikanow.infinit.e.widget.library.framework.InfiniteMaster;
+	import com.ikanow.infinit.e.widget.library.framework.WidgetSaveObject;
 	import com.ikanow.infinit.e.widget.library.frameworkold.ModuleInterface;
 	import com.ikanow.infinit.e.widget.library.frameworkold.QueryResults;
 	import com.ikanow.infinit.e.widget.library.utility.JSONDecoder;
@@ -52,14 +52,17 @@ package com.ikanow.infinit.e.shared.model.manager
 	import com.ikanow.infinit.e.widget.library.utility.URLEncoder;
 	import com.ikanow.infinit.e.widget.library.widget.IResultSet;
 	import com.ikanow.infinit.e.widget.library.widget.IWidget;
+	
 	import flash.display.DisplayObject;
 	import flash.utils.setTimeout;
+	
 	import mx.collections.ArrayCollection;
 	import mx.controls.Alert;
 	import mx.resources.IResourceManager;
 	import mx.resources.ResourceManager;
 	import mx.rpc.events.ResultEvent;
 	import mx.rpc.http.mxml.HTTPService;
+	
 	import system.data.Map;
 	import system.data.maps.HashMap;
 	
@@ -114,6 +117,9 @@ package com.ikanow.infinit.e.shared.model.manager
 		 * The current user
 		 */
 		public var currentUser:User;
+		
+		[Inject( "communityManager.communities", bind = "true" )]
+		public var communities:ArrayCollection;
 		
 		[Bindable]
 		/**
@@ -192,7 +198,10 @@ package com.ikanow.infinit.e.shared.model.manager
 			{
 				var widgetUrl:String = _widgetUrls[ i ];
 				var widget:IWidget = _widgets[ i ] as IWidget;
-				widget.onLoadWidgetOptions( setupManager.getSetupWidgetOptions( widgetUrl ) );
+				var widgetSave:WidgetSaveObject = setupManager.getSetupWidgetOptions( widgetUrl );
+				
+				if ( null != widgetSave && null != widgetSave.communitySave && !widgetSave.communitySave.isEmpty() )
+					widget.onLoadWidgetOptions( setupManager.getSetupWidgetOptions( widgetUrl ) );
 			}
 		}
 		
@@ -259,10 +268,45 @@ package com.ikanow.infinit.e.shared.model.manager
 		
 		}
 		
+		/**
+		 * Returns an anonymous object in the Infinit.e "community" JSON format
+		 *
+		 * @param id The id of the community
+		 * @returns an Object representation of the community JSON
+		 */
+		public function getCommunityById( id:String ):Object
+		{
+			var community_to_return:Object = null;
+			if ( communities != null && communities.length > 0 )
+			{
+				for each ( var community:Community in communities )
+				{
+					if ( community._id == id )
+					{
+						//found it, create anon object and return
+						community_to_return = community;
+						break;
+					}
+				}
+			}
+			return community_to_return;
+		}
+		
 		public function getCurrentQuery():Object
 		{
 			return QueryUtil.getQueryStringObject( currentQueryStringRequest );
 			//return currentQueryStringRequest.clone() as Object;
+		}
+		
+		/**
+		 * Returns an anonymous object in the Infinit.e "source" JSON format
+		 *
+		 * @param id Either the id or the key of the source
+		 * @returns an Object representation of the source JSON
+		 */
+		public function getSourceByIdOrKey( idOrKey:String ):Object
+		{
+			return null;
 		}
 		
 		/**
@@ -439,6 +483,15 @@ package com.ikanow.infinit.e.shared.model.manager
 				httpService.send( json );
 			}
 		}
+		/**
+		 * Allows widgets writers to tell the framework to save their settings immediately
+		 *
+		 * @param id The widget save object
+		 */
+		public function saveWidgetSettingsNow( widgetOptions:WidgetSaveObject ):void
+		{
+			//TODO
+		}
 		
 		[Inject( "queryManager.currentQueryStringRequest", bind = "true" )]
 		/**
@@ -447,7 +500,14 @@ package com.ikanow.infinit.e.shared.model.manager
 		 */
 		public function setCurrentQueryString( value:QueryStringRequest ):void
 		{
+			var runQueryIfPossible:Boolean = ( null == currentQueryStringRequest );
+			
 			currentQueryStringRequest = value;
+			
+			if ( ( null != queryResult ) && runQueryIfPossible )
+			{
+				setQueryResult( queryResult );
+			}
 		}
 		
 		[Inject( "queryManager.queryResult", bind = "true" )]
@@ -459,14 +519,16 @@ package com.ikanow.infinit.e.shared.model.manager
 		{
 			queryResult = value;
 			
-			var queryResults:QueryResults = new QueryResults();
-			
-			if ( value )
-				queryResults.populateQueryResults( value, null, context );
-			
-			// set the results in the context and the widget modules
-			context.onNewQuery( queryResults, QueryConstants.QUERY_RESULTS, currentQueryStringRequest as Object );
-			applyQueryToAllWidgets( context.getQuery_AllResults() );
+			if ( null != currentQueryStringRequest )
+			{
+				var queryResults:QueryResults = new QueryResults();
+				
+				if ( value )
+					queryResults.populateQueryResults( value, null, context );
+				
+				context.onNewQuery( queryResults, QueryConstants.QUERY_RESULTS, QueryUtil.getQueryStringObject( currentQueryStringRequest ) as Object );
+				applyQueryToAllWidgets( context.getQuery_AllResults() );
+			}
 		}
 		
 		public function setWidgetOptions( shares:ArrayCollection ):void
@@ -552,8 +614,6 @@ package com.ikanow.infinit.e.shared.model.manager
 			
 			var queryString:QueryString = ObjectTranslatorUtil.translateObject( newQuery, new QueryString, null, false, true ) as QueryString;
 			queryEvent.queryString = queryString;
-			
-			// Default event: update query, pop up nothing
 			
 			if ( modifiedElements )
 			{

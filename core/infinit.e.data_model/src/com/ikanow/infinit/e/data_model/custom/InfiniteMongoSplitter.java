@@ -1,3 +1,18 @@
+/*******************************************************************************
+ * Copyright 2012 The Infinit.e Open Source Project
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
 package com.ikanow.infinit.e.data_model.custom;
 
 import java.util.ArrayList;
@@ -26,18 +41,28 @@ public class InfiniteMongoSplitter
 	{
 		MongoURI uri = conf.getInputURI();
 		DBCollection coll = InfiniteMongoConfigUtil.getCollection(uri);
-		int count = coll.find(conf.getQuery()).count();
+		int nMaxCount = 1 + conf.getMaxDocsPerSplit()*conf.getMaxSplits();
+		int count = 0;
+		if (nMaxCount <= 1) { 
+			nMaxCount = 0;
+		}
+		else {
+			count = coll.find(conf.getQuery()).limit(nMaxCount).count();
+		}
 		//if maxdocssplit and maxsplits is set and there are less documents than splits*docspersplit then use the new splitter
 		//otherwise use the old splitter
-		if ( conf.getMaxDocsPerSplit() > 0 && conf.getMaxSplits() > 0 && ( count < (conf.getMaxSplits()*conf.getMaxDocsPerSplit()) ) )
+		if (conf.getLimit() > 0) {
+			return calculateManualSplits(conf, 1, conf.getLimit(), coll);			
+		}
+		else if ( conf.getMaxDocsPerSplit() > 0 && conf.getMaxSplits() > 0 && ( count < nMaxCount ) )
 		{
-			_logger.info("Calculating splits manually");
+			_logger.debug("Calculating splits manually");
 			int splits_needed = (count/conf.getMaxDocsPerSplit()) + 1;
 			return calculateManualSplits(conf, splits_needed, conf.getMaxDocsPerSplit(), coll);
 		}
 		else
 		{
-			_logger.info("Calculating splits via mongo-hadoop");
+			_logger.debug("Calculating splits via mongo-hadoop");
 			return MongoSplitter.calculateSplits(conf);						
 		}
 	}
@@ -55,7 +80,7 @@ public class InfiniteMongoSplitter
 	private static List<InputSplit> calculateManualSplits(InfiniteMongoConfig conf, int numSplits, int limit, DBCollection coll)
 	{
 		final List<InputSplit> splits = new ArrayList<InputSplit>(numSplits);
-		_logger.info("using a limit of " + limit + " for "+numSplits+" splits");
+		_logger.debug("using a limit of " + limit + " for "+numSplits+" splits");
 		for ( int i = 0; i < numSplits; i++ )
 		{
 			splits.add(new InfiniteMongoInputSplit(conf.getInputURI(), conf.getInputKey(), conf.getQuery(), conf.getFields(), conf.getSort(), limit, i*limit, conf.isNoTimeout()));

@@ -27,7 +27,6 @@ import com.ikanow.infinit.e.data_model.api.ResponsePojo;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo.ResponseObject;
 import com.ikanow.infinit.e.data_model.store.DbManager;
 import com.ikanow.infinit.e.data_model.store.social.authentication.AuthenticationPojo;
-import com.ikanow.infinit.e.data_model.store.social.cookies.CookiePojo;
 import com.ikanow.infinit.e.data_model.InfiniteEnums;
 import com.mongodb.BasicDBObject;
 import com.mongodb.DBObject;
@@ -173,16 +172,28 @@ public class LoginHandler
 	 */
 	public ResponsePojo keepAlive(String cookieLookup) 
 	{
+		return keepAlive(cookieLookup, null);
+	}
+	public ResponsePojo keepAlive(String cookieLookup, Boolean bActiveAdmin) 
+	{
 		ResponsePojo rp = new ResponsePojo();
 		if ( cookieLookup == null )
 		{
 			//user has been logged out/has no cookie return error
 			rp.setResponse(new ResponseObject("Keep Alive",false,"User has been inactive too long, \nor is not logged in, \nor is logged in elsewhere"));
 		}
-		else
+		else if (null == bActiveAdmin)
 		{
 			//cookie was found successfully, time was updated during cookieLookup()
 			rp.setResponse(new ResponseObject("Keep Alive",true,"Cookie kept alive, 15min left."));
+		}
+		else if (bActiveAdmin) {
+			//cookie was found successfully, time was updated during cookieLookup()
+			rp.setResponse(new ResponseObject("Keep Alive",true,"Active Admin: Cookie kept alive, 15min left."));			
+		}
+		else if (!bActiveAdmin) {
+			//cookie was found successfully, time was updated during cookieLookup()
+			rp.setResponse(new ResponseObject("Keep Alive",true,"Inactive Admin: Cookie kept alive, 15min left."));			
 		}
 		return rp;
 	}
@@ -202,9 +213,11 @@ public class LoginHandler
 			//remove all this userids cookies			
 			try
 			{
-				CookiePojo cookieQuery = new CookiePojo();
-				cookieQuery.setProfileId(new ObjectId(cookieLookup));
-				DbManager.getSocial().getCookies().remove(cookieQuery.toDb());
+				BasicDBObject dbQuery = new BasicDBObject();
+				dbQuery.put("profileId", new ObjectId(cookieLookup));
+				dbQuery.put("apiKey", new BasicDBObject(DbManager.exists_, false));
+					// (because of this 'exists' clause, can't use the ORM)
+				DbManager.getSocial().getCookies().remove(dbQuery);
 			}
 			catch (Exception e )
 			{

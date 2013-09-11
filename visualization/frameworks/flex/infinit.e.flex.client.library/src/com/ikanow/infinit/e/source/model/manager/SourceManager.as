@@ -1,21 +1,22 @@
 /*******************************************************************************
  * Copyright 2012, The Infinit.e Open Source Project.
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License, version 3,
  * as published by the Free Software Foundation.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
 package com.ikanow.infinit.e.source.model.manager
 {
 	import com.adobe.utils.StringUtil;
+	import com.ikanow.infinit.e.shared.event.SourceEvent;
 	import com.ikanow.infinit.e.shared.model.constant.Constants;
 	import com.ikanow.infinit.e.shared.model.constant.QueryConstants;
 	import com.ikanow.infinit.e.shared.model.manager.base.InfiniteManager;
@@ -23,11 +24,18 @@ package com.ikanow.infinit.e.source.model.manager
 	import com.ikanow.infinit.e.shared.model.vo.QueryStringRequest;
 	import com.ikanow.infinit.e.shared.model.vo.Source;
 	import com.ikanow.infinit.e.shared.util.CollectionUtil;
+	import com.ikanow.infinit.e.shared.util.SourceUtil;
 	import com.ikanow.infinit.e.source.model.constant.SourceConstants;
 	import flash.events.Event;
 	import flash.events.EventDispatcher;
 	import mx.collections.ArrayCollection;
+	import mx.collections.ISortField;
+	import mx.collections.Sort;
 	import mx.collections.SortField;
+	import mx.controls.Alert;
+	import system.data.Map;
+	import system.data.Set;
+	import system.data.maps.HashMap;
 	
 	/**
 	 * Source Manager
@@ -49,6 +57,17 @@ package com.ikanow.infinit.e.source.model.manager
 		 * The sources collection in the selected communities
 		 */
 		public var sources:ArrayCollection;
+		
+		/**
+		 * The flag to refresh the sources or not
+		 */
+		public var sendRefreshEvent:Boolean;
+		
+		/**
+		 * Current sort order
+		 */
+		[Bindable]
+		public var currSortOrder:Array = null;
 		
 		//======================================
 		// protected properties 
@@ -212,21 +231,8 @@ package com.ikanow.infinit.e.source.model.manager
 		 */
 		protected function refreshSources( value:ArrayCollection ):void
 		{
-			var newSources:ArrayCollection = new ArrayCollection();
-			
-			for each ( var source:Source in value )
-			{
-				source.title = StringUtil.ltrim( source.title );
-				
-				if ( !CollectionUtil.doesCollectionContainItem( sourcesMaster, source ) )
-				{
-					newSources.addItem( source );
-				}
-			}
-			
-			sourcesMaster.addAll( newSources );
-			sourcesMaster.refresh();
-			
+			// (this might need to get more complicated if we only start refreshing for selected communities)
+			sourcesMaster = value;
 			updateSourcesFromQueryString();
 		}
 		
@@ -299,9 +305,42 @@ package com.ikanow.infinit.e.source.model.manager
 				}
 			}
 			
-			// sort by title
-			CollectionUtil.applySort( sourcesNew, [ new SortField( SourceConstants.FIELD_TITLE, true ), new SortField( SourceConstants.FIELD_TAGS_STRING, true ) ] );
+			if ( null == currSortOrder || 0 == currSortOrder.length )
+			{
+				CollectionUtil.applySort( sourcesNew, [ new SortField( SourceConstants.FIELD_TITLE, true ), new SortField( SourceConstants.FIELD_COMMUNITY, true ) ] );
+			}
+			else // (1 element only)
+			{
+				//(hacky but seems to work?!)
+				var item:ISortField = currSortOrder.pop() as ISortField;
+				currSortOrder.push( item );
+				
+				var sortFieldName:String = item.name;
+				
+				if ( "status" == sortFieldName ) // this is more complex because "status" isn't a real field
+				{
+					var sort:Sort = new Sort();
+					sort.compareFunction = SourceUtil.sortCompareStatus_direct;
+					
+					if ( item.descending )
+						sort.fields = [ new SortField( SourceConstants.FIELD_STATUS, true, true ) ];
+					else
+						sort.fields = [ new SortField( SourceConstants.FIELD_STATUS, true, false ) ];
+					sourcesNew.sort = sort;
+					sourcesNew.refresh();
+				}
+				else
+				{
+					CollectionUtil.applySort( sourcesNew, [ new SortField( sortFieldName, true, item.descending ) ] );
+				}
+			}
 			sources = sourcesNew;
+			
+			if ( sendRefreshEvent )
+			{
+				var event:SourceEvent = new SourceEvent( SourceEvent.REFRESH_SOURCES );
+				dispatchEvent( event );
+			}
 		}
 	}
 }

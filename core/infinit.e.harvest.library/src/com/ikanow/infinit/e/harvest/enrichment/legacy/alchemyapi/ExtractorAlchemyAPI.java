@@ -30,6 +30,7 @@ import com.ikanow.infinit.e.data_model.InfiniteEnums.ExtractorSourceLevelExcepti
 import com.ikanow.infinit.e.data_model.interfaces.harvest.EntityExtractorEnum;
 import com.ikanow.infinit.e.data_model.interfaces.harvest.IEntityExtractor;
 import com.ikanow.infinit.e.data_model.interfaces.harvest.ITextExtractor;
+import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
 import com.ikanow.infinit.e.data_model.store.document.DocumentPojo;
 import com.ikanow.infinit.e.data_model.store.document.EntityPojo;
 import com.ikanow.infinit.e.data_model.store.document.GeoPojo;
@@ -51,6 +52,10 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 	AlchemyEntityGeoCleanser postProcGeo = null;
 	private boolean _bConceptExtraction = false;
 
+	//_______________________________________________________________________
+	//_____________________________INITIALIZATION________________
+	//_______________________________________________________________________
+
 	/**
 	 * Construtor, adds capabilities of Alchemy to hashmap
 	 */
@@ -63,33 +68,106 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		_capabilities.put(EntityExtractorEnum.GeotagExtraction, "true");
 		_capabilities.put(EntityExtractorEnum.SentimentExtraction, "true");
 		
-		// Alchemy configuration:
+		// configuration done when the first document is received for this source
+	}
+	
+	// Configuration: override global configuration on a per source basis
+	
+	private boolean configured = false;
+	
+	private void configure(SourcePojo source)
+	{
+		if (configured) {
+			return;
+		}
+		configured = true;
+		
+		// SOURCE OVERRIDE
+		
+		int nPostProc = -1;
+		Boolean bSentimentEnabled = null;
+		Boolean bConceptsEnabled = null;
+		
+		if ((null != source) && (null != source.getExtractorOptions())) {
+			try {
+				nPostProc = Integer.parseInt(source.getExtractorOptions().get("app.alchemyapi.postproc"));				
+			}
+			catch (Exception e){}
+			
+			try {
+				String s = source.getExtractorOptions().get("app.alchemyapi.sentiment");
+				if (null != s) bSentimentEnabled = Boolean.parseBoolean(s);
+			}
+			catch (Exception e){}
+			try {
+				String s = source.getExtractorOptions().get("app.alchemyapi.concepts");
+				if (null != s) bConceptsEnabled = Boolean.parseBoolean(s);						
+			}
+			catch (Exception e){}
+			
+		}
+		// DEFAULT CONFIGURATION
+		
+		PropertiesManager properties = new PropertiesManager();
+		
+		// 1] POST PROC
+		
+		if (-1 == nPostProc) { // (ie no per source config)
+			try {
+				nPostProc = properties.getAlchemyPostProcessingSetting();				
+			}		
+			catch (Exception e) {
+				nPostProc = -1;
+			} 		
+		}
+		// 2] SENTIMENT
+		
 		try {
-			PropertiesManager properties = new PropertiesManager(); 
-			int n = properties.getAlchemyPostProcessingSetting();
-			
-			if (0 != (1 & n)) {
-				postProcPerson = new AlchemyEntityPersonCleanser();
-				postProcPerson.initialize();
-			} 
-			if (0 != (2 & n)) {
-				postProcGeo = new AlchemyEntityGeoCleanser();
-				postProcGeo.initialize();
-			} 
-			
-			Boolean bSentimentEnabled = properties.getExtractionCapabilityEnabled(getName(), "sentiment");
-			if (null != bSentimentEnabled) { // (ie defaults to true)
-				_alch.setSentimentEnabled(bSentimentEnabled);
-			}			
-			Boolean bConceptsEnabled = properties.getExtractionCapabilityEnabled(getName(), "concepts");
-			if (null != bConceptsEnabled) { // (ie defaults to true)
-				_bConceptExtraction = bConceptsEnabled;
-			}			
-		}		
+			if (null == bSentimentEnabled) { // (ie not per source)
+				bSentimentEnabled = properties.getExtractionCapabilityEnabled(getName(), "sentiment");			
+			}
+		}
+		catch (Exception e) {}
+		
+		// 3] CONCEPTS
+		
+		try {
+			if (null == bConceptsEnabled) { // (ie not per source)
+				bConceptsEnabled = properties.getExtractionCapabilityEnabled(getName(), "concepts");			
+			}
+		}
+		catch (Exception e) {}
+
+		// ACTUALLY DO CONFIG
+		
+		try {
+			if (-1 != nPostProc) { // (ie some configuration enabled)
+				if (0 != (1 & nPostProc)) {
+					postProcPerson = new AlchemyEntityPersonCleanser();
+					postProcPerson.initialize();
+				} 
+				if (0 != (2 & nPostProc)) {
+					postProcGeo = new AlchemyEntityGeoCleanser();
+					postProcGeo.initialize();
+				} 							
+			}
+			else {
+				postProcPerson = null; // (just don't do post processing)
+				postProcGeo = null; // (just don't do post processing)			
+			}
+		}
 		catch (Exception e) {
 			postProcPerson = null; // (just don't do post processing)
-			postProcGeo = null; // (just don't do post processing)
-		} 
+			postProcGeo = null; // (just don't do post processing)						
+		}
+		
+		if (null != bSentimentEnabled) { // (ie defaults to true)
+			_alch.setSentimentEnabled(bSentimentEnabled);
+		}
+		
+		if (null != bConceptsEnabled) { // (ie defaults to true)
+			_bConceptExtraction = bConceptsEnabled;
+		}			
 	}
 	
 	//_______________________________________________________________________
@@ -109,7 +187,15 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 	@Override
 	public void extractEntities(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException 
 	{		
+		if (null == partialDoc) {
+			return;
+		}
+		configure(partialDoc.getTempSource());
+		
 		// Run through specified extractor need to pull these properties from config file
+		if (null == partialDoc.getFullText()) {
+			return;
+		}
 		if (partialDoc.getFullText().length() < 16) { // Else don't waste Extractor call/error logging			
 			return;
 		}
@@ -132,8 +218,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch ( Exception e ) 
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (1): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}
 
 		try {
@@ -155,8 +242,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();			
+			String strError = "Exception Message (2): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 		// Then get concepts:
 		if (_bConceptExtraction) {
@@ -177,6 +265,11 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 	@Override
 	public void extractEntitiesAndText(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException
 	{
+		if (null == partialDoc) {
+			return;
+		}
+		configure(partialDoc.getTempSource());
+		
 		// Run through specified extractor need to pull these properties from config file
 		String json_doc = null;
 		try
@@ -195,8 +288,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (3): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 		
 		try
@@ -231,8 +325,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (4): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 		// Then get concepts:
 		if (_bConceptExtraction) {
@@ -283,6 +378,11 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 	@Override
 	public void extractText(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException
 	{
+		if (null == partialDoc) {
+			return;
+		}
+		configure(partialDoc.getTempSource());
+		
 		String json_doc = null;
 		try
 		{
@@ -300,8 +400,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (5): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}
 		
 		try
@@ -324,8 +425,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (6): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 		// Then get concepts:
 		if (_bConceptExtraction) {
@@ -339,7 +441,7 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 	
 	// Utility function for concept extraction
 	
-	public void doConcepts(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException {
+	private void doConcepts(DocumentPojo partialDoc) throws ExtractorDocumentLevelException, ExtractorDailyLimitExceededException {
 		if ((null != partialDoc.getMetadata()) && partialDoc.getMetadata().containsKey("AlchemyAPI_concepts")) {
 			return;
 		}		
@@ -359,8 +461,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		}
 		catch (Exception e) {
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();			
+			String strError = "Exception Message (7): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}
 		try {
 			// Turn concepts into metadata:
@@ -373,8 +476,9 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		catch (Exception e)
 		{
 			//Collect info and spit out to log
-			logger.error("Exception Message: doc=" + partialDoc.getUrl() + " error=" +  e.getMessage(), e);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "Exception Message (8): doc=" + partialDoc.getUrl() + " error=" +  e.getMessage();
+			logger.error(strError, e);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}	
 	}
 
@@ -421,13 +525,15 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 		}
 		else if ( json_doc.contains("cannot-retrieve:http-redirect") )
 		{
-			logger.error("AlchemyAPI redirect error on url=" + feed_url);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();
+			String strError = "AlchemyAPI redirect error on url=" + feed_url;
+			logger.error(strError);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);
 		}
 		else if ( json_doc.contains("cannot-retrieve:http-error:4") )
 		{
-			logger.error("AlchemyAPI cannot retrieve error on url=" + feed_url);
-			throw new InfiniteEnums.ExtractorDocumentLevelException();			
+			String strError = "AlchemyAPI cannot retrieve error on url=" + feed_url;
+			logger.error(strError);
+			throw new InfiniteEnums.ExtractorDocumentLevelException(strError);			
 		}
 		else if ( json_doc.contains("invalid-api-key") )
 		{
@@ -438,7 +544,7 @@ public class ExtractorAlchemyAPI implements IEntityExtractor, ITextExtractor
 	
 	// Utility function to convert an Alchemy entity to an Infinite entity
 	
-	public static EntityPojo convertAlchemyEntToEntPojo(AlchemyEntityPojo pojoToConvert)
+	private static EntityPojo convertAlchemyEntToEntPojo(AlchemyEntityPojo pojoToConvert)
 	{
 		try
 		{

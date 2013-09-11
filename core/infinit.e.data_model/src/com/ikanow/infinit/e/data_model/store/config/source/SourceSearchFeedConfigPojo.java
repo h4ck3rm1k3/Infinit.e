@@ -15,11 +15,15 @@
  ******************************************************************************/
 package com.ikanow.infinit.e.data_model.store.config.source;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+
 public class SourceSearchFeedConfigPojo {
 
 	// JSON fields
 	
 	private String userAgent = null; // Optional, if present is used for the "User-Agent:" HTTP field
+	private LinkedHashMap<String, String> httpFields = null; // Optinal, to override other HTTP fields, eg Cookie, Authorization, X-*)
 	
 	private String script = null; // Mandatory, processes the search results and returns an array of the following JSON objects:
 									// { "description: string, // (optionally)
@@ -28,6 +32,8 @@ public class SourceSearchFeedConfigPojo {
 									//	 "url": string }
 									// These links are then harvested as if they were "rss.extraUrls"
 	private String scriptlang = null; // Currently only "javascript" is supported
+	private String globals = null; // Optional Javascript that is evaluated before script or extraMeta (ie to define global functions)
+	private String scriptflags = null; // flags to apply to above script, to select the variables - see meta.flags for more details
 	
 	private String pageChangeRegex = null; // If non-null, this regex should be used to match the pagination URL parameter (which will be replaced by pageChangeReplace)
 											// Also, group 1 should be the start, to allow any offsets specified in the URL to be respected
@@ -36,6 +42,13 @@ public class SourceSearchFeedConfigPojo {
 	private Integer numResultsPerPage = 1; // Mandatory if pageChangeRegex is non-null - controls the number of results per page 
 	private Integer waitTimeBetweenPages_ms = null; // Optional, only used if pageChangeRegex is non-null - controls a wait between successive pages if set
 	private Integer maxDepth = null; // Optional, if spidering out, max depth (defaults to 2 if not specified)
+	
+	private String proxyOverride = null; // Currently: "direct" to bypass proxy, or a proxy specification "(http|socks)://host:port"
+	
+	private List<UnstructuredAnalysisConfigPojo.metaField> extraMeta = null; // For pre-generating other metadata to be used by "script" field (eg can use xpath)
+																				// Note the fieldname "searchEngineSubsystem" is reserved for the top-level (ie last to run) script
+	
+	private Boolean stopPaginatingOnDuplicate = null; // If true (default: false) then will stop paginating (or link following if no pagination set the first time it sees a duplicate record)
 	
 	// Getters and setters
 	
@@ -92,6 +105,42 @@ public class SourceSearchFeedConfigPojo {
 	}
 	public Integer getMaxDepth() {
 		return maxDepth;
+	}
+	public void setProxyOverride(String proxyOverride) {
+		this.proxyOverride = proxyOverride;
+	}
+	public String getProxyOverride() {
+		return proxyOverride;
+	}
+	public void setScriptflags(String scriptflags) {
+		this.scriptflags = scriptflags;
+	}
+	public String getScriptflags() {
+		return scriptflags;
+	}
+	public void setExtraMeta(List<UnstructuredAnalysisConfigPojo.metaField> extraMeta) {
+		this.extraMeta = extraMeta;
+	}
+	public List<UnstructuredAnalysisConfigPojo.metaField> getExtraMeta() {
+		return extraMeta;
+	}
+	public void setGlobals(String globals) {
+		this.globals = globals;
+	}
+	public String getGlobals() {
+		return globals;
+	}
+	public void setHttpFields(LinkedHashMap<String, String> httpFields) {
+		this.httpFields = httpFields;
+	}
+	public LinkedHashMap<String, String> getHttpFields() {
+		return httpFields;
+	}
+	public void setStopPaginatingOnDuplicate(Boolean stopPaginatingOnDuplicate) {
+		this.stopPaginatingOnDuplicate = stopPaginatingOnDuplicate;
+	}
+	public boolean getStopPaginatingOnDuplicate() {
+		return null == stopPaginatingOnDuplicate ? false : stopPaginatingOnDuplicate;
 	}
 	
 }

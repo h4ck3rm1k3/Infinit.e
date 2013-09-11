@@ -44,6 +44,7 @@ import com.google.gson.JsonSerializer;
 import com.google.gson.reflect.TypeToken;
 
 import com.ikanow.infinit.e.data_model.store.BaseDbPojo;
+import com.ikanow.infinit.e.data_model.store.MongoDbUtil;
 import com.ikanow.infinit.e.data_model.store.config.source.SourcePojo;
 import com.mongodb.BasicDBList;
 
@@ -101,10 +102,14 @@ public class DocumentPojo extends BaseDbPojo {
 	private List<EntityPojo> entities = null;
 	final public static String entities_ = "entities";
 	// (moved metadata to beta because of wholesale changes)
-
-	// Data source
+	
+	// Data source/Content
 	private Set<String> tags = null;
 	final public static String tags_ = "tags";
+	private String displayUrl = null;
+	final public static String displayUrl_ = "displayUrl";
+
+	// Data source
 	private ObjectId communityId = null; 
 	final public static String communityId_ = "communityId";
 		// (note as far as the API is concerned this a Set<String>)
@@ -125,6 +130,10 @@ public class DocumentPojo extends BaseDbPojo {
 	private String index = null; // The name of the index to which the feed's been added
 	final public static String index_ = "index";
 
+	// Only used for query responses
+	private Object explain = null;
+	final public static String explain_ = "explain";
+	
 /////////////////////////////////////////////////////////////////////////////////////////////////	
 	
 // The following won't be stored in the DB (either created by index map or transient)
@@ -146,7 +155,8 @@ public class DocumentPojo extends BaseDbPojo {
 	
 	// Alpha transient:
 	
-	transient String tmpFullText = null; // (temporary storage until obj written to MongoDB)
+	private transient String tmpFullText = null; // (temporary storage until obj written to MongoDB)
+	private transient String rawFullText = null; // (stores a pointer to the first full text set, ie normally directly from URL/file)
 
 	// Beta unstored (eg index or API fields)
 	
@@ -261,6 +271,9 @@ public class DocumentPojo extends BaseDbPojo {
 		return (null == fullText)?tmpFullText:fullText;
 	}
 	public void setFullText(String fullText) {
+		if (null == this.rawFullText) { // very first time, set the raw full text
+			rawFullText = fullText;
+		}
 		this.tmpFullText = fullText;
 	}
 	public void makeFullTextNonTransient() {
@@ -617,12 +630,15 @@ public class DocumentPojo extends BaseDbPojo {
 			DocumentPojo doc = BaseDbPojo.getDefaultBuilder().create().fromJson(json, DocumentPojo.class);  
 			if (null != metadata) {				
 				for (Entry<String, JsonElement> entry: metadata.entrySet()) {
-					// Very slow, better to do something like "http://stackoverflow.com/questions/5699323/using-json-with-mongodb"
-					// (or in fact MongoDbUtil)
-					// (note the only high performance use of documents with metadata enabled bypasses the data_model, so not a big problem at the moment)
-					doc.addToMetadata(entry.getKey(), 
-							((BasicDBList)com.mongodb.util.JSON.parse(entry.getValue().toString())).toArray());
-				}				
+					if (entry.getValue().isJsonArray()) {
+						doc.addToMetadata(entry.getKey(), MongoDbUtil.encodeArray(entry.getValue().getAsJsonArray()).toArray());
+					}
+					else {
+						BasicDBList dbl = new BasicDBList();
+						dbl.add(MongoDbUtil.encodeUnknown(entry.getValue()));
+						doc.addToMetadata(entry.getKey(), dbl);
+					}
+				}//TESTED				
 			}
 			return doc;
 		}
@@ -661,6 +677,30 @@ public class DocumentPojo extends BaseDbPojo {
 
 	public ObjectId getUpdateId() {
 		return updateId;
+	}
+
+	public void setDisplayUrl(String displayUrl) {
+		this.displayUrl = displayUrl;
+	}
+
+	public String getDisplayUrl() {
+		return displayUrl;
+	}
+
+	public void setExplain(Object explain) {
+		this.explain = explain;
+	}
+
+	public Object getExplain() {
+		return explain;
+	}
+
+	public void resetRawFullText() {
+		this.rawFullText = null;
+	}
+
+	public String getRawFullText() {
+		return rawFullText;
 	}
 
 }

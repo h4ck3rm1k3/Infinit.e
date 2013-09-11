@@ -16,6 +16,7 @@ limitations under the License.
 
 <%@ page import="java.io.*" %>
 <%@ page import="java.util.*" %>
+<%@ page import="com.google.common.collect.TreeMultimap" %>
 <%@ page import="java.net.*" %>
 <%@ page import="javax.naming.*" %>
 <%@ page import="javax.servlet.jsp.*" %>
@@ -33,6 +34,7 @@ limitations under the License.
 <%@ page import="org.apache.commons.httpclient.methods.PostMethod" %>
 <%@ page import="java.io.BufferedReader" %>
 <%@ page import="java.io.InputStreamReader" %>
+<%@ page import="org.apache.commons.lang.StringEscapeUtils.*" %>
 
 <%!
 	// !----------  ----------!
@@ -82,6 +84,7 @@ limitations under the License.
 		if (null == API_ROOT) { 
 			// Default to localhost
 			API_ROOT = "http://localhost:8080/api/";
+			//API_ROOT = "http://localhost:8184/";
 		}
 		
 		if (API_ROOT.contains("localhost")) { localCookie=true; }
@@ -168,6 +171,27 @@ limitations under the License.
 		}
 	} // TESTED
 	
+	// isLoggedInAsAdmin_GetAdmin - check to see if user is already logged in
+	// NOTE tri-state ... null means admin but not enabled, true is admin and active, false is definitely not admin
+	public Boolean isLoggedInAsAdmin_GetAdmin(boolean bGetAdmin, HttpServletRequest request, HttpServletResponse response) 
+	{
+		String json = callRestfulApi("auth/keepalive/admin?override=" + bGetAdmin, request, response);
+		if (json != null) 
+		{
+			keepAlive keepA = new Gson().fromJson(json, keepAlive.class);
+			if (keepA.response.success) {
+				if (keepA.response.message.contains("Active Admin"))
+					return true;
+				else
+					return null;
+			}
+			else return false;
+		} 
+		else 
+		{
+			return false;
+		}
+	} // TESTED
 	
 	// getLogin - attempt to log user in
 	private Boolean getLogin(String username, String password, HttpServletRequest request, HttpServletResponse response) 
@@ -345,6 +369,11 @@ limitations under the License.
 		return callRestfulApi("auth/logout/", request, response);
 	} // TESTED
 	
+	// Admin logOut - note doesn't actually log you out, just relinquishes admin
+	private String adminLogOut(HttpServletRequest request, HttpServletResponse response) 
+	{
+		return callRestfulApi("auth/logout/admin/", request, response);
+	} // TESTED
 	
 	// getShare -
 	private String getShare(String id, HttpServletRequest request, HttpServletResponse response) 
@@ -371,9 +400,14 @@ limitations under the License.
 	// getUserSources - 
 	private String getUserSources(HttpServletRequest request, HttpServletResponse response) 
 	{
-		return callRestfulApi("config/source/user/", request, response);
+		return callRestfulApi("config/source/user?stripped=true", request, response);
 	} // TESTED
 	
+	//getPersonList
+	private String getPeopleList(HttpServletRequest request, HttpServletResponse response) 
+	{
+		return callRestfulApi("social/person/list/", request, response);
+	}
 	
 	// getSystemCommunity - 
 	private String getSystemCommunity(HttpServletRequest request, HttpServletResponse response) 
@@ -530,14 +564,15 @@ limitations under the License.
 	// getSourceShares - 
 	private String getSourceShares(HttpServletRequest request, HttpServletResponse response) 
 	{
-		return callRestfulApi("social/share/search/?type=source,source_published",request, response);
+
+		return callRestfulApi("social/share/search/?type=source,source_published&searchby=community&id=*",request, response);
 	} // TESTED
 	
 	
 	// getUserSources - 
-	private Map<String,String> getUserSourcesAndShares(HttpServletRequest request, HttpServletResponse response)
+	private TreeMultimap<String,String> getUserSourcesAndShares(HttpServletRequest request, HttpServletResponse response, String filter)
 	{
-		Map<String,String> userSources = new HashMap<String,String>();
+		TreeMultimap<String,String> userSources = TreeMultimap.create();
 		String userIdStr = null;
 		
 		// publishedSources - array of source._ids of published sources
@@ -567,6 +602,10 @@ limitations under the License.
 					{
 						JSONObject shareObj = data.getJSONObject(i);
 						String tempTitle = shareObj.getString("title");
+						if ( ( filter.length() > 0 ) && !tempTitle.toLowerCase().contains( filter.toLowerCase() ) )
+						{
+							continue;
+						}
 						
 						JSONObject sourceObj = new JSONObject( shareObj.getString("share") );
 						if (sourceObj.has("_id")) publishedSources.add( sourceObj.getString("_id") );
@@ -597,6 +636,10 @@ limitations under the License.
 							if (!publishedSources.contains( sourceObj.getString("_id") ))
 							{
 								String tempTitle = sourceObj.getString("title");
+								if ( ( filter.length() > 0 ) && !tempTitle.toLowerCase().contains( filter.toLowerCase() ) )
+								{
+									continue;
+								}
 								if (sourceObj.has("ownerId") && !sourceObj.getString("ownerId").equalsIgnoreCase(userIdStr)) tempTitle += " (+)";
 								userSources.put(tempTitle, sourceObj.getString("_id"));
 							}
@@ -616,28 +659,31 @@ limitations under the License.
 	// getListOfAllPeople
 	private Map<String,String> getListOfAllPeople(HttpServletRequest request, HttpServletResponse response)
 	{
+		return getListOfAllPeople(request, response, null);
+	}
+	private Map<String,String> getListOfAllPeople(HttpServletRequest request, HttpServletResponse response, HashSet<String> personFilter)
+	{
 		Map<String,String> allPeople = new HashMap<String,String>();
 		try
 		{
-			JSONObject communityObj = new JSONObject ( getSystemCommunity(request, response) );
-			if ( communityObj.has("data") )
+			JSONObject listOfPeopleObj = new JSONObject( getPeopleList(request, response));
+			if ( listOfPeopleObj.has("data"))
 			{
-				JSONObject community = new JSONObject ( communityObj.getString("data") );
-				if ( community.has("members") )
+				JSONArray listOfPeople = new JSONArray ( listOfPeopleObj.getString("data") );
+				for ( int i = 0; i < listOfPeople.length(); i++)
 				{
-					JSONArray members = community.getJSONArray("members");
-					for (int i = 0; i < members.length(); i++) 
+					JSONObject person = listOfPeople.getJSONObject(i);
+					String id = person.getString("_id");
+					if ((null != personFilter) && personFilter.contains(id))
+						continue;
+					
+					if (person.has("displayName"))
 					{
-						JSONObject member = members.getJSONObject(i);
-						if (member.has("displayName"))
-						{
-							allPeople.put( member.getString("displayName"), member.getString("_id") );
-						}
-						else
-						{
-							allPeople.put( member.getString("_id"), member.getString("_id") );
-						}
-							
+						allPeople.put( person.getString("displayName"), id );
+					}
+					else
+					{
+						allPeople.put( id, id );
 					}
 				}
 			}
@@ -645,7 +691,7 @@ limitations under the License.
 		catch (Exception e)
 		{
 			System.out.println(e.getMessage());
-		}
+		}	
 		return allPeople;
 	}
 	
@@ -687,9 +733,9 @@ limitations under the License.
 	
 	
 	// getListOfAllCommunities
-	private Map<String,String> getListOfAllCommunities(HttpServletRequest request, HttpServletResponse response)
+	private TreeMultimap<String, String> getListOfAllCommunities(HttpServletRequest request, HttpServletResponse response)
 	{
-		Map<String,String> allCommunities = new HashMap<String,String>();
+		TreeMultimap<String,String> allCommunities = TreeMultimap.create();
 		try
 		{
 			JSONObject communitiesObj = new JSONObject ( getAllCommunities(request, response) );
@@ -712,9 +758,9 @@ limitations under the License.
 	
 	
 	// getListOfAllCommunities
-	private Map<String,String> getListOfAllNonPersonalCommunities(HttpServletRequest request, HttpServletResponse response)
+	private TreeMultimap<String,String> getListOfAllNonPersonalCommunities(HttpServletRequest request, HttpServletResponse response)
 	{
-		Map<String,String> allCommunities = new HashMap<String,String>();
+		TreeMultimap<String,String> allCommunities = TreeMultimap.create();
 		try
 		{
 			JSONObject communitiesObj = new JSONObject ( getAllCommunities(request, response) );
@@ -726,7 +772,11 @@ limitations under the License.
 					JSONObject community = communities.getJSONObject(i);
 					if (community.getString("isPersonalCommunity").equalsIgnoreCase("false") && community.has("name"))
 					{
-						allCommunities.put( community.getString("name"), community.getString("_id") );
+						String name = community.getString("name");
+						if (community.has("communityStatus") && (community.getString("communityStatus").equalsIgnoreCase("disabled"))) {
+							name += " (Disabled pending deletion)";
+						}
+						allCommunities.put( name, community.getString("_id") );
 					}
 				}
 			}

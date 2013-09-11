@@ -16,11 +16,14 @@
 package com.ikanow.infinit.e.api.knowledge;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.util.Arrays;
 import java.util.zip.GZIPInputStream;
 
 import org.apache.log4j.Logger;
 import org.bson.types.ObjectId;
 
+import com.ikanow.infinit.e.api.utils.MimeUtils;
 import com.ikanow.infinit.e.api.utils.RESTTools;
 import com.ikanow.infinit.e.data_model.api.ApiManager;
 import com.ikanow.infinit.e.data_model.api.ResponsePojo;
@@ -94,7 +97,8 @@ public class DocumentHandler
 			//TESTED (update case, normal case, and intermediate case where both update and original still exist)
 			
 			if (null == dbo) {
-				throw new RuntimeException("Document not found");
+				rp.setResponse(new ResponseObject("Doc Info",true,"Document not found"));
+				return rp;
 			}
 			DocumentPojo dp = DocumentPojo.fromDb(dbo, DocumentPojo.class);
 			if (bReturnFullText) 
@@ -103,7 +107,9 @@ public class DocumentHandler
 					byte[] storageArray = new byte[200000];
 					DBCollection contentDB = DbManager.getDocument().getContent();
 					BasicDBObject contentQ = new BasicDBObject(CompressedFullTextPojo.url_, dp.getUrl());
-					BasicDBObject dboContent = (BasicDBObject) contentDB.findOne(contentQ);
+					contentQ.put(CompressedFullTextPojo.sourceKey_, new BasicDBObject(MongoDbManager.in_, Arrays.asList(null, dp.getSourceKey())));
+					BasicDBObject fields = new BasicDBObject(CompressedFullTextPojo.gzip_content_, 1);
+					BasicDBObject dboContent = (BasicDBObject) contentDB.findOne(contentQ, fields);
 					if (null != dboContent) {
 						byte[] compressedData = ((byte[])dboContent.get(CompressedFullTextPojo.gzip_content_));				
 						ByteArrayInputStream in = new ByteArrayInputStream(compressedData);
@@ -140,8 +146,15 @@ public class DocumentHandler
 					byte[] bytes = FileHarvester.getFile(fileURL, source);
 					if ( bytes == null )
 					{
-						//fail
-						rp.setResponse(new ResponseObject("Doc Info",false,"Could not find document"));
+						// Try returning JSON instead
+						String json = ApiManager.mapToApi(dp, new DocumentPojoApiMap());
+						DocumentFileInterface dfp = new DocumentFileInterface();
+						
+						dfp.bytes = json.getBytes();
+						dfp.mediaType = "application/json";
+						
+						rp.setResponse(new ResponseObject("Doc Info",true,"Document bytes returned successfully"));
+						rp.setData(dfp, null);
 						return rp;
 					}
 					else
@@ -174,11 +187,68 @@ public class DocumentHandler
 		{
 			// If an exception occurs log the error
 			logger.error("Exception Message: " + e.getMessage(), e);
-			rp.setResponse(new ResponseObject("Doc Info",false,"error returning feed"));
+			rp.setResponse(new ResponseObject("Doc Info",false,"error returning feed: " + e.getMessage()));
 		}
 		// Return Json String representing the user
 		return rp;
 	}
+	
+	public ResponsePojo getFileContents(String userIdStr, String sourceKey, String relativePath) {
+		ResponsePojo rp = new ResponsePojo();
+		
+		try  {
+			BasicDBObject query = new BasicDBObject(SourcePojo.key_, sourceKey);
+			query.put(SourcePojo.communityIds_, new BasicDBObject(MongoDbManager.in_, RESTTools.getUserCommunities(userIdStr)));
+			BasicDBObject fields = new BasicDBObject(SourcePojo.url_, 1);
+			fields.put(SourcePojo.extractType_, 1);
+			fields.put(SourcePojo.file_, 1);
+			fields.put(SourcePojo.isApproved_, 1);
+			SourcePojo source = SourcePojo.fromDb(DbManager.getIngest().getSource().findOne(query, fields), SourcePojo.class);
+
+			// TEST for security shenanigans
+			String baseRelativePath = new File(".").getCanonicalPath();
+			String actualRelativePath = new File(relativePath).getCanonicalPath();
+			if (!actualRelativePath.startsWith(baseRelativePath)) {
+				throw new RuntimeException("Access denied: " + relativePath);
+			}			
+			//(end security shenanigans)
+			
+			if (null == source) {
+				throw new RuntimeException("Document source not found: " + sourceKey);
+			}
+			if ((null != source.getExtractType()) && !source.getExtractType().equals("File")) {
+				throw new RuntimeException("Document source not a file: " + sourceKey + ", " + source.getExtractType());				
+			}
+			if (!source.isApproved()) {
+				throw new RuntimeException("Document source not approved, access denied: " + sourceKey);				
+			}
+			String fileURL = source.getUrl() + relativePath;
+			byte[] bytes = FileHarvester.getFile(fileURL, source);
+			if ( bytes == null )
+			{
+				//fail
+				rp.setResponse(new ResponseObject("Doc Info",false,"Could not find document: " + relativePath));
+				return rp;
+			}
+			else
+			{						
+				DocumentFileInterface dfp = new DocumentFileInterface();
+				dfp.bytes = bytes;
+				dfp.mediaType = getMediaType(fileURL);
+				rp.setResponse(new ResponseObject("Doc Info",true,"Document bytes returned successfully"));
+				rp.setData(dfp, null);
+				return rp;
+			}			
+		}
+		catch (Exception e)
+		{
+			// If an exception occurs log the error
+			logger.error("Exception Message: " + e.getMessage(), e);
+			rp.setResponse(new ResponseObject("Doc Info",false,"error returning feed: " + e.getMessage()));
+		}
+		// Return Json String representing the user
+		return rp;
+	}//TESTED
 	
 	private SourcePojo getSourceFromKey(String sourceKey)
 	{
@@ -197,15 +267,20 @@ public class DocumentHandler
 	}
 	
 	private String getMediaType(String url)
-	{
-		String mediaType = "text/plain";
+	{		
+		String mediaType = null;
+
+		int end = url.lastIndexOf("?");
+		if (end >= 0) {
+			url = url.substring(0, end);
+		}
 		int mid = url.lastIndexOf(".");
 		String extension = url.substring(mid+1, url.length());
-		if ( extension.equals("pdf"))
-			return "application/pdf";
-		else if ( extension.equals("xml"))
-			return "text/xml";
+		mediaType = MimeUtils.lookupMimeType(extension);
+		if (null == mediaType) {
+			mediaType = "text/plain";
+		}
 		return mediaType;
-	}
+	}//TESTED
 }
 

@@ -1,15 +1,15 @@
 /*******************************************************************************
  * Copyright 2012, The Infinit.e Open Source Project.
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License, version 3,
  * as published by the Free Software Foundation.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
@@ -28,6 +28,7 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 	import com.ikanow.infinit.e.shared.model.presentation.base.PresentationModel;
 	import com.ikanow.infinit.e.shared.model.vo.QueryOutputRequest;
 	import com.ikanow.infinit.e.shared.model.vo.QueryStringRequest;
+	import com.ikanow.infinit.e.shared.model.vo.User;
 	import com.ikanow.infinit.e.shared.model.vo.Widget;
 	import com.ikanow.infinit.e.shared.model.vo.ui.ServiceStatistics;
 	import com.ikanow.infinit.e.shared.util.CollectionUtil;
@@ -38,6 +39,8 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 	import com.ikanow.infinit.e.widget.library.data.WidgetContext;
 	import com.ikanow.infinit.e.widget.library.frameworkold.QueryResults;
 	import com.ikanow.infinit.e.widget.library.widget.IResultSet;
+	import flash.desktop.Clipboard;
+	import flash.desktop.ClipboardFormats;
 	import flash.events.Event;
 	import flash.net.FileReference;
 	import flash.net.URLRequest;
@@ -45,6 +48,8 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 	import flash.utils.setTimeout;
 	import mx.collections.ArrayCollection;
 	import mx.collections.ListCollectionView;
+	import mx.controls.Alert;
+	import mx.managers.PopUpManager;
 	import mx.resources.ResourceManager;
 	import spark.formatters.NumberFormatter;
 	
@@ -147,6 +152,14 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 		public var filterActive:Boolean;
 		
 		[Bindable]
+		[Inject( "setupManager.selectedWidgets", bind = "true" )]
+		/**
+		 *
+		 * @default
+		 */
+		public var selectedWidgets:ArrayCollection;
+		
+		[Bindable]
 		[Inject( "widgetModuleManager.filterToolTip", bind = "true" )]
 		/**
 		 * The tooltip for the current filter
@@ -164,6 +177,12 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 		 * The collection of selected communities
 		 */
 		public var selectedCommunities:ArrayCollection;
+		
+		[Inject( "userManager.currentUser", bind = "true" )]
+		/**
+		 * The current user
+		 */
+		public var currentUser:User;
 		
 		//======================================
 		// protected properties 
@@ -242,10 +261,11 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 		public function exportRSS():void
 		{
 			var queryStringRequest:QueryStringRequest = lastQueryStringRequest.clone();
-			
+			var USER_ID:String = currentUser._id;
+			queryStringRequest.communityIds.unshift( USER_ID );
 			queryStringRequest.output.format = ExportConstants.RSS;
-			
-			var urlString:String = ServiceConstants.QUERY_URL + CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );;
+			//push userid onto commids (is it okay to have it twice?)
+			var urlString:String = ServiceConstants.QUERY_URL + USER_ID + "," + CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );
 			var json:String = JSONUtil.encode( QueryUtil.getQueryStringObject( queryStringRequest ) );
 			var encJson:String = ExportConstants.JSON_ENCODE + ServiceUtil.urlEncode( json );
 			
@@ -375,6 +395,25 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 			setShowResultsCount( resultsCountMessage != Constants.BLANK );
 		}
 		
+		/**
+		 * Create a URL representing the workspace and copy to the clipboard as text
+		 */
+		public function shareLink():void
+		{
+			var queryStringRequest:QueryStringRequest = lastQueryStringRequest.clone();
+			var urlString:String = ServiceConstants.SERVER_URL.replace( ExportConstants.API_TERM, ExportConstants.INDEX_TERM );
+			var json:String = JSONUtil.encode( QueryUtil.getQueryStringObject( queryStringRequest ) );
+			var encJson:String = ExportConstants.QUERY_ENCODE + ServiceUtil.urlEncode( json );
+			encJson += ExportConstants.COMMUNITYIDS_ENCODE + CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );
+			encJson += ExportConstants.WIDGETIDS_ENCODE + CollectionUtil.getStringFromArrayCollectionField( selectedWidgets );
+			
+			Clipboard.generalClipboard.clear();
+			Clipboard.generalClipboard.setData( ClipboardFormats.TEXT_FORMAT, urlString + encJson, false );
+			
+			var alert:Alert = Alert.show( "Copied to Clipboard", "" );
+			setTimeout( PopUpManager.removePopUp, 500, alert );
+		}
+		
 		//======================================
 		// protected methods 
 		//======================================
@@ -387,6 +426,9 @@ package com.ikanow.infinit.e.model.presentation.dashboard.workspaces.header
 		{
 			showResultsCount = value;
 		}
+		//======================================
+		// private methods 
+		//======================================
 	}
 }
 

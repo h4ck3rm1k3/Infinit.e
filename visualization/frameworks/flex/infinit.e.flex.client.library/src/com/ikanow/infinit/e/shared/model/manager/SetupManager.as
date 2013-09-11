@@ -27,6 +27,7 @@ package com.ikanow.infinit.e.shared.model.manager
 	import com.ikanow.infinit.e.shared.model.vo.WidgetSummary;
 	import com.ikanow.infinit.e.shared.model.vo.ui.DialogControl;
 	import com.ikanow.infinit.e.shared.util.CollectionUtil;
+	import com.ikanow.infinit.e.shared.util.ExternalInterfaceUtility;
 	import com.ikanow.infinit.e.shared.util.JSONUtil;
 	import com.ikanow.infinit.e.shared.util.QueryUtil;
 	import com.ikanow.infinit.e.shared.util.ServiceUtil;
@@ -38,6 +39,7 @@ package com.ikanow.infinit.e.shared.model.manager
 	import mx.collections.ListCollectionView;
 	import mx.collections.Sort;
 	import mx.collections.SortField;
+	import mx.controls.Alert;
 	import mx.resources.ResourceManager;
 	
 	/**
@@ -140,6 +142,35 @@ package com.ikanow.infinit.e.shared.model.manager
 			return widgetOptions;
 		}
 		
+		public function overrideWidgetSetup( value:Setup ):void
+		{
+			//Override from URL if possible
+			var params:Object = ExternalInterfaceUtility.getUrlParams();
+			
+			if ( params.hasOwnProperty( "widgetIds" ) )
+			{
+				var widgetTitles:Array = params[ "widgetIds" ].split( "," );
+				var widgetSummaries:ArrayCollection = new ArrayCollection();
+				
+				for each ( var widgetId:String in widgetTitles )
+				{
+					var widgetSummary:WidgetSummary = new WidgetSummary();
+					// most of these are just boilerplate
+					widgetSummary.widgetTitle = widgetId;
+					widgetSummary.widgetUrl = "";
+					widgetSummary.widgetDisplay = "";
+					widgetSummary.widgetImageUrl = "";
+					widgetSummary.widgetX = 0;
+					widgetSummary.widgetY = 0;
+					widgetSummary.widgetWidth = 600;
+					widgetSummary.widgetHeight = 600;
+					widgetSummary.widgetOptions = "";
+					widgetSummaries.addItem( widgetSummary );
+				}
+				value.openModules = widgetSummaries;
+			}
+		}
+		
 		/**
 		 * Reset
 		 * Used to reset on logout
@@ -215,20 +246,26 @@ package com.ikanow.infinit.e.shared.model.manager
 			url += Constants.FORWARD_SLASH;
 			
 			// add the selected community ids
-			url += CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );
+			var communityIds:String = CollectionUtil.getStringFromArrayCollectionField( selectedCommunities );
 			
-			// update the ui setup
-			var setupEvent:SetupEvent = new SetupEvent( SetupEvent.UPDATE_SETUP );
-			setupEvent.urlParams = url;
-			
-			if ( lastQueryStringRequest )
-				setupEvent.queryString = QueryUtil.getQueryStringObject( lastQueryStringRequest );
-			
-			setupEvent.dialogControl = DialogControl.create( false, ResourceManager.getInstance().getString( 'infinite', 'setupService.updateSetup' ) );
-			dispatcher.dispatchEvent( setupEvent );
-			
-			// save the user widgets
-			saveUserWidgets();
+			//skip saving if no comms are selected
+			if ( communityIds != "" && communityIds != null )
+			{
+				url += communityIds;
+				
+				// update the ui setup
+				var setupEvent:SetupEvent = new SetupEvent( SetupEvent.UPDATE_SETUP );
+				setupEvent.urlParams = url;
+				
+				if ( lastQueryStringRequest )
+					setupEvent.queryString = QueryUtil.getQueryStringObject( lastQueryStringRequest );
+				
+				setupEvent.dialogControl = DialogControl.create( false, ResourceManager.getInstance().getString( 'infinite', 'setupService.updateSetup' ) );
+				dispatcher.dispatchEvent( setupEvent );
+				
+				// save the user widgets
+				saveUserWidgets();
+			}
 		}
 		
 		public function saveWidgetOptions( shares:ArrayCollection ):void

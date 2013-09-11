@@ -15,8 +15,6 @@
  ******************************************************************************/
 package com.ikanow.infinit.e.api.custom.mapreduce;
 
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
 import java.util.Date;
 import java.util.Map;
 
@@ -57,19 +55,19 @@ public class CustomInterface extends ServerResource
 	private String title = null;
 	private String desc = null;
 	private String inputColl = null;
-	private String map = null;
-	private String reduce = null;
 	private String outputKey = null;
 	private String outputValue = null;
 	private String appendResults = null;
 	private String ageOutInDays = null;
 	private String jobsToDependOn = null;
 	private String json = null;
+	private boolean bQuickRun = false;
 	private boolean shouldRemoveJar = false;
 	private int limit = 0;
 	private CustomMapReduceJobPojo jsonPojo = new CustomMapReduceJobPojo();
+	private Integer debugLimit = null;
 	
-	private CustomHandler customhandler = new CustomHandler();
+	private CustomHandler customhandler = null;
 	
 	// Logging: not currently needed
 	//private static final StringBuffer logMsg = new StringBuffer();
@@ -83,6 +81,20 @@ public class CustomInterface extends ServerResource
 		 Map<String, String> queryOptions = this.getQuery().getValuesMap();
 		 urlStr = request.getResourceRef().toString();
 		 cookie = request.getCookies().getFirstValue("infinitecookie",true);	
+		 
+		 String debugLimitString = queryOptions.get("debugLimit");
+		 if ((null != debugLimitString))
+		 {
+			 try
+			 {
+				 debugLimit = Integer.parseInt(debugLimitString);
+			 }
+			 catch (Exception ex)
+			 {
+				 debugLimit = null;
+			 }
+		 }
+		customhandler = new CustomHandler(debugLimit);
 		 
 		 String removeJar = queryOptions.get("removeJar");
 		 if ((null != removeJar) && ( (removeJar.equals("1")) || (removeJar.equalsIgnoreCase("true")) )) 
@@ -100,6 +112,16 @@ public class CustomInterface extends ServerResource
 			 {
 				 limit = 0;
 			 }
+		 }
+		 String fields = queryOptions.get("fields");
+		 if ((null != fields)) {
+			 json = fields;
+		 }
+		 
+		 String quickRun = queryOptions.get("quickRun");
+		 if ((null != quickRun) && ( (quickRun.equals("1")) || (quickRun.equalsIgnoreCase("true")) )) 
+		 {
+			 bQuickRun = true;			 
 		 }
 		 
 		 //Method.POST
@@ -186,14 +208,6 @@ public class CustomInterface extends ServerResource
 				 jobid = RESTTools.decodeRESTParam("jobid", attributes);				 
 				 action = "getjobs";
 			 }
-			 else if (urlStr.contains("/knowledge/mapreduce/") || urlStr.contains("/custom/mapreduce/"))
-			 {
-				 action = "mapreduce";
-				 map = RESTTools.decodeRESTParam("map", attributes);
-				 reduce = RESTTools.decodeRESTParam("reduce", attributes);
-				 query = RESTTools.decodeRESTParam("query", attributes);
-				 inputColl = RESTTools.decodeRESTParam("inputcollection", attributes);
-			 }
 		 }		 
 	}
 	
@@ -206,74 +220,67 @@ public class CustomInterface extends ServerResource
 	{
 		if (Method.POST == getRequest().getMethod()) 
 		{
+			if (urlStr.contains("/knowledge/mapreduce/schedulejob") || urlStr.contains("/custom/mapreduce/schedulejob") || urlStr.contains("/custom/savedquery/schedulejob"))
+			{
+				action = "schedule";
+			}	
+			else if ( urlStr.contains("/custom/mapreduce/updatejob" ) || urlStr.contains("/custom/savedquery/updatejob"))
+			{
+				action = "update";
+			}
 			try 
 			{
 				json = entity.getText();
-				try 
-				 {
-					 if ( json != null )
-					 {
-						 json = URLDecoder.decode(json, "UTF-8");
-						 //convert json to mrpojo
-						 jsonPojo = ApiManager.mapFromApi(json, CustomMapReduceJobPojo.class, new CustomMapReduceJobPojoApiMap(null));
-						 
-						 // Overwrite command line args (quick and easy way to get POST working)
-						 // communityIds and jobDependencies still have to be specified at the command line
-						 if (null != jsonPojo.scheduleFreq) {
-							 freqSched = jsonPojo.scheduleFreq.toString();
-						 }
-						 if (Long.MAX_VALUE != jsonPojo.nextRunTime) {
-							 nextRunTime = Long.toString(jsonPojo.nextRunTime);
-						 }
-						 if (null != jsonPojo.jarURL) {
-							 jarURL = jsonPojo.jarURL;
-						 }
-						 if (null != jsonPojo.mapper) {
-							 mapperClass = jsonPojo.mapper;
-						 }
-						 if (null != jsonPojo.combiner) {
-							 combinerClass = jsonPojo.combiner;
-						 }
-						 if (null != jsonPojo.reducer) {
-							 reducerClass = jsonPojo.reducer;
-						 }
-						 if (null != jsonPojo.query) {
-							 query = jsonPojo.query;
-						 }
-						 if (null != jsonPojo.jobtitle) {
-							 title = jsonPojo.jobtitle;
-						 }
-						 if (null != jsonPojo.jobdesc) {
-							 desc = jsonPojo.jobdesc;
-						 }
-						 if (null != jsonPojo.inputCollection) {
-							 inputColl = jsonPojo.inputCollection;
-						 }
-						 if (null != jsonPojo.outputKey) {
-							 outputKey = jsonPojo.outputKey;
-						 }
-						 if (null != jsonPojo.outputValue) {
-							 outputValue = jsonPojo.outputValue;
-						 }
-						 if (null != jsonPojo.appendResults) {
-							 appendResults = Boolean.toString(jsonPojo.appendResults);
-						 }
-						 if (null != jsonPojo.appendAgeOutInDays) {
-							 ageOutInDays = Double.toString(jsonPojo.appendAgeOutInDays);
-						 }
-					 }
-				 }
-				 catch (UnsupportedEncodingException e) 
-				 {
-						action = "failed";
-				 }				
-				if (urlStr.contains("/knowledge/mapreduce/schedulejob") || urlStr.contains("/custom/mapreduce/schedulejob") || urlStr.contains("/custom/savedquery/schedulejob"))
+				if ( json != null )
 				{
-					action = "schedule";
-				}	
-				else if ( urlStr.contains("/custom/mapreduce/updatejob" ) || urlStr.contains("/custom/savedquery/updatejob"))
-				{
-					action = "update";
+					//convert json to mrpojo
+					jsonPojo = ApiManager.mapFromApi(json, CustomMapReduceJobPojo.class, new CustomMapReduceJobPojoApiMap(null));
+
+					// Overwrite command line args (quick and easy way to get POST working)
+					// communityIds and jobDependencies still have to be specified at the command line
+					if ((null != jsonPojo.scheduleFreq) && (null == freqSched)) {
+						//(this has a default value so need to prioritize URL params)
+						freqSched = jsonPojo.scheduleFreq.toString();
+					}
+					if ((Long.MAX_VALUE != jsonPojo.nextRunTime) && (null == nextRunTime)) {
+						nextRunTime = Long.toString(jsonPojo.nextRunTime);
+					}
+					if (null != jsonPojo.jarURL) {
+						jarURL = jsonPojo.jarURL;
+					}
+					if (null != jsonPojo.mapper) {
+						mapperClass = jsonPojo.mapper;
+					}
+					if (null != jsonPojo.combiner) {
+						combinerClass = jsonPojo.combiner;
+					}
+					if (null != jsonPojo.reducer) {
+						reducerClass = jsonPojo.reducer;
+					}
+					if (null != jsonPojo.query) {
+						query = jsonPojo.query;
+					}
+					if (null != jsonPojo.jobtitle) {
+						title = jsonPojo.jobtitle;
+					}
+					if (null != jsonPojo.jobdesc) {
+						desc = jsonPojo.jobdesc;
+					}
+					if (null != jsonPojo.inputCollection) {
+						inputColl = jsonPojo.inputCollection;
+					}
+					if (null != jsonPojo.outputKey) {
+						outputKey = jsonPojo.outputKey;
+					}
+					if (null != jsonPojo.outputValue) {
+						outputValue = jsonPojo.outputValue;
+					}
+					if (null != jsonPojo.appendResults) {
+						appendResults = Boolean.toString(jsonPojo.appendResults);
+					}
+					if (null != jsonPojo.appendAgeOutInDays) {
+						ageOutInDays = Double.toString(jsonPojo.appendAgeOutInDays);
+					}
 				}
 			}
 			catch (Exception e) 
@@ -310,23 +317,19 @@ public class CustomInterface extends ServerResource
 			 {
 				 if ( action.equals("getresults") )
 				 {
-					 rp = this.customhandler.getJobResults(cookieLookup, jobid, limit); 
+					 rp = this.customhandler.getJobResults(cookieLookup, jobid, limit, json); 
 				 }
 				 else if ( action.equals("schedule"))
 				 {
-					 rp = this.customhandler.scheduleJob(cookieLookup, title, desc, communityIds, jarURL, nextRunTime, freqSched, mapperClass, reducerClass, combinerClass, query, inputColl, outputKey, outputValue,appendResults,ageOutInDays,jobsToDependOn,jsonPojo.arguments);
+					 rp = this.customhandler.scheduleJob(cookieLookup, title, desc, communityIds, jarURL, nextRunTime, freqSched, mapperClass, reducerClass, combinerClass, query, inputColl, outputKey, outputValue,appendResults,ageOutInDays,jobsToDependOn,jsonPojo.arguments, jsonPojo.exportToHdfs, bQuickRun);
 				 }
 				 else if ( action.equals("update") )
 				 {
-					 rp = this.customhandler.updateJob(cookieLookup, (jobid==null)?(title):(jobid), title, desc, communityIds, jarURL, nextRunTime, freqSched, mapperClass, reducerClass, combinerClass, query, inputColl, outputKey, outputValue,appendResults,ageOutInDays,jobsToDependOn,jsonPojo.arguments);
+					 rp = this.customhandler.updateJob(cookieLookup, (jobid==null)?(title):(jobid), title, desc, communityIds, jarURL, nextRunTime, freqSched, mapperClass, reducerClass, combinerClass, query, inputColl, outputKey, outputValue,appendResults,ageOutInDays,jobsToDependOn,jsonPojo.arguments, jsonPojo.exportToHdfs, bQuickRun);
 				 }
 				 else if ( action.equals("getjobs"))
 				 {
 					 rp = this.customhandler.getJobOrJobs(cookieLookup, jobid);
-				 }
-				 else if ( action.equals("mapreduce"))
-				 {
-					 rp = this.customhandler.runMapReduce(cookieLookup, inputColl, map, reduce, query);
 				 }
 				 else if ( action.equals("removejob") )
 				 {

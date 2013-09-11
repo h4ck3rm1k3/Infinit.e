@@ -7,6 +7,8 @@ import javax.script.ScriptEngine;
 import javax.script.ScriptException;
 
 import org.bson.types.ObjectId;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import com.ikanow.infinit.e.data_model.store.DbManager;
 import com.ikanow.infinit.e.data_model.store.MongoDbManager;
@@ -26,8 +28,9 @@ public class CacheUtils
 	 * @param communityIds
 	 * @param _context2
 	 * @throws ScriptException
+	 * @throws JSONException 
 	 */	
-	public static void addJSONCachesToEngine(Map<String, String> caches, ScriptEngine engine, Set<ObjectId> communityIds, HarvestContext _context2) throws ScriptException 
+	public static void addJSONCachesToEngine(Map<String, ObjectId> caches, ScriptEngine engine, Set<ObjectId> communityIds, HarvestContext _context2) throws ScriptException, JSONException 
 	{
 		if ( null != engine )
 		{
@@ -35,11 +38,13 @@ public class CacheUtils
 			//get json from shares
 			for ( String cacheName : caches.keySet())
 			{
-				ObjectId shareId = new ObjectId(caches.get(cacheName));
+				ObjectId shareId = caches.get(cacheName);
 				String json = getShareFromDB(shareId, communityIds);
+				JSONObject jsonObj = new JSONObject(json);
+				engine.put("tmpcache", jsonObj);				
 				if ( json != null )
 				{						
-					engine.eval("_cache['"+cacheName+"'] = eval('("+json+")')");
+					engine.eval("_cache['"+cacheName+"'] = eval('(' + tmpcache + ')');");
 				}
 				
 			}

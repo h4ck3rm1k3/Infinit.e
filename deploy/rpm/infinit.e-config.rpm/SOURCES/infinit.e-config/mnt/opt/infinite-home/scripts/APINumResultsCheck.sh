@@ -20,7 +20,7 @@ SEARCHTERMS_RAW=`grep "^api.search.test.terms=" $API_PROPERTY_FILE | sed s/'api.
         # (need to allow spaces here)
 SEARCHTERMS=($SEARCHTERMS_RAW)
 NUMSEARCHTERMS=${#SEARCHTERMS[@]}
-if [ "$NUMSEARCHTERMS" == "-1" ];
+if [ "$NUMSEARCHTERMS" == "-1" ]; then
 	#Don't want to perform active monitoring
 	exit
 fi
@@ -46,7 +46,7 @@ PASSWORD=$(echo -n $USERPASS  | sha256sum | xxd -r -p | base64|sed s/[/]/'%2F'/g
 USERPASS="$USERNAME/$PASSWORD"
 
 USER=`echo $USERPASS | sed s/"\/.*"//g`
-GROUP='4c927585d591d31d7b37097a'
+GROUP='*'
 
 ################################################################################
 #  Some commands:
@@ -94,7 +94,7 @@ COUNT=`grep -o $stringToMatch /tmp/apiResults.txt | wc -l`
 
 ################################################################################
 #  Send Email if Results are not as Expected
-if [ "$COUNT" -eq "$EXPECTEDRESULTNUM" ] 
+if [ ! "$COUNT" -lt "$EXPECTEDRESULTNUM" ] 
 then
         echo $COUNT$' Results Received, no Email Sent'
 

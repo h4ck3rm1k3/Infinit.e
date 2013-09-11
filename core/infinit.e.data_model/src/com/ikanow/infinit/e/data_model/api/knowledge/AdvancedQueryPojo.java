@@ -16,7 +16,10 @@
 package com.ikanow.infinit.e.data_model.api.knowledge;
 
 import java.lang.reflect.Type;
+import java.util.HashMap;
 import java.util.List;
+
+import org.bson.types.ObjectId;
 
 import com.google.gson.JsonDeserializationContext;
 import com.google.gson.JsonDeserializer;
@@ -32,16 +35,22 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 
 	static public class QueryTermPojo 
 	{
+		// Can only specify 1 of: ftext [+metadataField], etext [+metadataField], {entity,entityValue+entityType} [+sentiment], { event, assoc } [+sentiment], time, geo
+		
 		public String ftext; // Free text query (arbitrary Lucene query)
 		public String etext; // Exact text search
-		public String entity; // Gazateer index ("disambiguous_name/type", '/' can be ':')
+		public String metadataField = null; // Restricts an etext/ftext to apply only to the specified metadata field
+		// Ignored for other query types.
+		
+		public String entity; // Entity index ("disambiguous_name/type", '/' can be ':')
 		// Alternative for entity (overrides it):
 		public String entityValue; // (must be specified)
 		public String entityType; // (can be left unspecified)
 		
 		static public class EntityOptionPojo { // Options for "entity" types
-			public boolean expandAlias = false; // If true (!default), adds aliases to the search
-			public boolean expandOntology = false; // If true (!default), adds "useful" generalizations of the entity to the search
+			public boolean rawText = false; // If true (!default) adds the disambiguated name and all aliases as an exact text search
+			public boolean expandAlias = false; // If true (!default), adds other actual names to the search
+			public boolean expandOntology = false; // If true (!default), adds "useful" generalizations of the entity to the search (CURRENTLY UNSUPPORTED)
 		}
 		public EntityOptionPojo entityOpt;
 		
@@ -53,8 +62,15 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 			public QueryTermPojo.TimeTermPojo time;
 			public String type; // Event,Fact,Summary
 		}
-		public AssociationTermPojo event;
+		public AssociationTermPojo event; //DEPRECATED - use assoc instead, this is just for backwards compatibility
 		public AssociationTermPojo assoc;
+		
+		//This sentiment tag is ignored unless accompanied with an entity or assoc term:
+		static public class SentimentModifierPojo {
+			public Double min;
+			public Double max;
+		}
+		public SentimentModifierPojo sentiment;
 		
 		static public class TimeTermPojo { // Time bounding term for the query
 			public String min; // Min date, inclusive, (default - no min) - any sensible date format parsed
@@ -80,14 +96,13 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 				//e.g. send countrysubsidiary and we will only search states, cities, points (not country so US doesnt show up 1mil times)
 			public String ontology_type; //the ontology type of the searchterm so we can only search this type an below 
 		}
-		public GeoTermPojo geo;
-		
-		public String metadataField = null; // Restricts an etext/ftext to apply only to the specified metadata field
-											// Ignored for other query types.
+		public GeoTermPojo geo;		
 	}
 	public List<QueryTermPojo> qt; // Array of query terms as above
 	public String logic; // The logic to combine these query terms, use Lucene logic with qt[n], n=0,1,2,... or n=1,2,3...
-
+	public Boolean expandAlias; // Optional, defaults to true - if false, manually specified aliases are ignored (automatic aliases still depend on per-entity settings)
+	public Boolean explain; // Optional, defaults to false - if true appends the "explain" parameter from elasticsearch to every promoted document 
+	
 	static public class QueryRawPojo { // Raw query object for power users
 		public QueryRawPojo() {}
 		public QueryRawPojo(String s) { query = s; }
@@ -119,8 +134,15 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 	
 	static public class QueryScorePojo { // Scoring parameters for the query
 		public Integer numAnalyze = 1000; // The number of documents on which to perform processing, default 1000
+		
 		public Double sigWeight = 0.67; // The relative weight to give to query significance (Infinit.e score), default to 0.67
 		public Double relWeight = 0.33; // The relative weight to give to search relevance (standard Lucene score), default to 0.33
+		public HashMap<String, Double> sourceWeights; // highest priority score weightings
+		public HashMap<String, Double> typeWeights; // middle priority score weightings
+		public HashMap<String, Double> tagWeights; // low priority score weightings
+		
+		public Boolean scoreEnts = true; // Whether to include significance scores with entities (allows more efficient doc retrieval when ranked by date/rel)
+		public Boolean adjustAggregateSig; // if true (default automatic) then relevance is used to adjust significance scores for aggregations
 		
 		static public class TimeProxTermPojo { // Scoring based on time
 			public String time = "now"; // The "centre" time, any sensible format is parsed, including "now" (default)
@@ -148,7 +170,7 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 			public Integer numEventsTimelineReturn = 1000; // (number of events to bring back)
 			public Integer skip = 0;
 			public Boolean ents = true;
-			public Boolean geo = true; // (if ents==false, this still brings back entities)
+			public Boolean geo = null; // (by default do whatever "ents" does)
 			public Boolean events = true;
 			public Boolean facts = true;
 			public Boolean summaries = true;
@@ -170,21 +192,16 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 			public Integer sources = 0; // (src urls)
 			public Integer sourceMetadata = 0; // (both tags and types)
 			
-			// A better interface, note will override the above if no regex filter set:
-			// (not supported as of V0)
-			static public class EntityAggregationOutputPojo {
-				// This has different meaning depending on which of numReturn/geoMaxCount/timesInterval is set:
-				public String target = null; // 1 of "geo", "times", "entity", "event", "fact", "source", "source_tag", "source_type", or "metadata.<[object.]*field>"
-				// And then one of:
-				public Integer numReturn = 0; // Number of entries to return - aggregates document counts vs the specified object
-				public String regexFilter = null; // (only applies for numReturn set, not geoMaxCount or timesInterval)
-				//or
-				public Integer geoMaxCount = null; // Number of geotags to return - counts either documents (target==null), or numeric fields (target="metadata.*")
-				//or
-				public String timesInterval = null; // Date histogram width - counts either documents (target==null), or numeric fields (object="metadata.*")				
-			}
-			public List<EntityAggregationOutputPojo> aggList = null; 
-
+			// Temporal aggregation (basic info)
+			static public class TemporalAggregationOutputPojo {
+				public String timesInterval = null; // "month", or "<N>[ydwh]" (if null, takes from timesInterval - errors out if neither set)
+				public List<String> entityList; // List of entities to grab
+				//TODO (INF-955): NOT IMPLEMENTED YET
+				public Boolean entityCountOnly = null; // If true counts only (default); if false then provides sentiment (if available), significance and total counts  
+				public Integer geoCount = null; // Number of geo-counts to store per time, 0/null to not display at all			
+			};
+			public TemporalAggregationOutputPojo moments = null;
+			
 			// Alternatively:
 			public String raw = null; // (allows the user to specify his own facets in ElasticSearch syntax as an alternative)
 		}
@@ -199,4 +216,5 @@ public class AdvancedQueryPojo extends BaseApiPojo {
 		
 	}
 	public QueryOutputPojo output; // (optional, just defaults to the above defaults if omitted)
+	public List<ObjectId> communityIds = null;
 }
